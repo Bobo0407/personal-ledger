@@ -1,0 +1,36 @@
+# --- 機密與真實資料（規格 4.4：永遠不進 GitHub）---
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+attachments/
+logs/
+*.log
+*.age
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# --- 工具快取 ---
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- 編輯器與系統 ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

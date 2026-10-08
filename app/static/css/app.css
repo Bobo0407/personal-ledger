@@ -1,0 +1,43 @@
+/* P0 最小樣式：手機優先，之後的階段再擴充。 */
+:root {
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --muted: #59636e;
+  --border: #d1d9e0;
+  --accent: #0b6bcb;
+  --danger-bg: #fdecea;
+  --danger-fg: #a4281c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15181c;
+    --fg: #e6e9ec;
+    --muted: #9aa4ae;
+    --border: #3a4149;
+    --accent: #4c9bf0;
+    --danger-bg: #3d1f1c;
+    --danger-fg: #ffb4a9;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", "Noto Sans TC", sans-serif;
+}
+
+.container { max-width: 28rem; margin: 0 auto; padding: 1.5rem 1rem; }
+
+.stack { display: flex; flex-direction: column; gap: 0.5rem; }
+
+input, button { font: inherit; width: 100%; padding: 0.75rem; border-radius: 0.5rem; }
+input { border: 1px solid var(--border); background: var(--bg); color: var(--fg); }
+
+button { border: 0; background: var(--accent); color: #fff; margin-top: 0.5rem; cursor: pointer; }
+button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+
+.alert { padding: 0.75rem; border-radius: 0.5rem; background: var(--danger-bg); color: var(--danger-fg); }

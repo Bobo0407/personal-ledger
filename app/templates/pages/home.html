@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+{# P0 佔位首頁：P3 會換成真正的首頁（規格 8.1） #}
+<h1>記帳</h1>
+<p>已登入：<strong>{{ user.username }}</strong></p>
+
+<form method="post" action="/logout">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" class="secondary">登出</button>
+</form>
+{% endblock %}

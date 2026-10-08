@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}登入｜記帳{% endblock %}
+{% block content %}
+<h1>登入</h1>
+
+{% if error %}
+<p class="alert" role="alert">{{ error }}</p>
+{% endif %}
+
+<form method="post" action="/login" class="stack">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="next" value="{{ next }}">
+
+  <label for="username">帳號</label>
+  <input id="username" name="username" type="text" value="{{ username }}"
+         autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+
+  <label for="password">密碼</label>
+  <input id="password" name="password" type="password"
+         autocomplete="current-password" required>
+
+  <button type="submit">登入</button>
+</form>
+{% endblock %}
