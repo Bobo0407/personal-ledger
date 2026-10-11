@@ -102,6 +102,21 @@ def test_check_constraint_matches_enum(migrated_engine, table, column, enum):
     assert sql_in(column, enum) in ddl
 
 
+# 金額欄位（P1 Step 7）：只列真正的金額，不對所有欄位禁止 Numeric
+MONEY_COLUMNS = [
+    ("postings", "amount"),  # 新台幣元，帶正負號
+    ("postings", "original_amount_minor"),  # 原幣最小單位
+    ("credit_card_profiles", "credit_limit"),
+]
+
+
+@pytest.mark.parametrize(("table", "column"), MONEY_COLUMNS)
+def test_money_columns_are_integer(migrated_engine, table, column):
+    with migrated_engine.connect() as conn:
+        types = {row[1]: row[2] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+    assert types[column] == "INTEGER"
+
+
 # --- accounts -----------------------------------------------------------------
 
 
