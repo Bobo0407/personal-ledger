@@ -6,7 +6,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 
-from app.db import make_engine
+from app.db import make_engine, make_sessionmaker
 from app.logging_config import reset_logging
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -40,3 +40,24 @@ def migrated_engine(alembic_cfg, db_url):
     engine = make_engine(db_url)
     yield engine
     engine.dispose()
+
+
+TEST_CHART = PROJECT_ROOT / "tests" / "fixtures" / "chart_of_accounts_test.yaml"
+
+
+@pytest.fixture
+def ledger_db(migrated_engine):
+    """已升級到最新 migration 的空資料庫 Session。"""
+    session = make_sessionmaker(migrated_engine)()
+    yield session
+    session.rollback()
+    session.close()
+
+
+@pytest.fixture
+def seeded_db(ledger_db):
+    """載入測試用科目表（tests/fixtures/chart_of_accounts_test.yaml）後的 Session。"""
+    from app.services.master_data_seed import seed_master_data
+
+    seed_master_data(ledger_db, TEST_CHART)
+    return ledger_db

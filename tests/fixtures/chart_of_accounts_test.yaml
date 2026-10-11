@@ -1,0 +1,71 @@
+# 測試專用的科目表（規格第 11 節：每個自動化測試先載入測試用科目表；決策 S11）。
+#
+# 和正式的 seeds/chart_of_accounts.yaml 分開，正式科目表日後怎麼改都不影響測試。
+# 涵蓋 T01–T34 會用到的科目；信用卡帶有 credit_card 區塊，用來測試設定流程（日期是測試值，不是真實資料）。
+
+accounts:
+  - {code: "1101", name: 現金, class: ASSET, subtype: CASH, show_on_home: true}
+  - {code: "1102", name: 郵局, class: ASSET, subtype: BANK, show_on_home: true}
+  - {code: "1103", name: 聯邦活存, class: ASSET, subtype: BANK, show_on_home: true}
+  - {code: "1201", name: 勞退個人專戶, class: ASSET, subtype: PENSION, tax_category: PENSION_SELF}
+  - {code: "1301", name: 預付所得稅, class: ASSET, subtype: PREPAID_TAX, tax_category: WITHHOLDING}
+  - code: "2101"
+    name: 聯邦信用卡
+    class: LIABILITY
+    subtype: CREDIT_CARD
+    show_on_home: true
+    credit_card: {closing_day: 15, due_day: 3, autopay: "1103"}
+  - {code: "3101", name: 期初權益, class: EQUITY, system_key: OPENING_EQUITY}
+  - {code: "3102", name: 帳務調整, class: EQUITY, system_key: ADJUSTMENT}
+  - code: "4100"
+    name: 薪資
+    class: INCOME
+    children:
+      - {code: "4101", name: 本薪, tax_category: SALARY}
+  - {code: "4201", name: 利息收入, class: INCOME, tax_category: INTEREST}
+  - code: "5100"
+    name: 餐飲
+    class: EXPENSE
+    children:
+      - {code: "5101", name: 正餐}
+      - {code: "5102", name: 飲料}
+  - code: "5200"
+    name: 購物
+    class: EXPENSE
+    children:
+      - {code: "5201", name: 網購}
+  - code: "5300"
+    name: 娛樂
+    class: EXPENSE
+    children:
+      - {code: "5301", name: 演唱會與轉播}
+      - {code: "5303", name: 遊戲}
+  - code: "5500"
+    name: 金融費用
+    class: EXPENSE
+    children:
+      - {code: "5501", name: 其他手續費}
+      - {code: "5502", name: 海外交易手續費}
+      - {code: "5503", name: 分期利息}
+  - code: "5600"
+    name: 保險
+    class: EXPENSE
+    children:
+      - {code: "5601", name: 勞保, tax_category: INSURANCE}
+      - {code: "5602", name: 健保, tax_category: INSURANCE}
+
+currencies:
+  - {code: USD, name: 美元, minor_unit: 2}
+  - {code: JPY, name: 日圓, minor_unit: 0}
+
+payment_methods:
+  - {name: LINE Pay, account: "1102", default: true}
+  - {name: 台灣Pay, account: "1102"}
+  - {name: 郵局簽帳卡, account: "1102"}
+  - {name: 現金, account: "1101"}
+  - {name: 聯邦信用卡, account: "2101"}
+  - {name: 聯邦轉帳, account: "1103"}
+
+settings:
+  large_amount_threshold: 10000
+  budget_alert_pct: 80

@@ -17,6 +17,8 @@ dependencies = [
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
     "argon2-cffi>=23.1",
+    # 主資料初始值 seeds/*.yaml；只使用 yaml.safe_load
+    "pyyaml>=6.0",
     # Windows 沒有內建 IANA 時區資料庫，zoneinfo 需要這個套件才能載入 Asia/Taipei
     "tzdata; sys_platform == 'win32'",
 ]

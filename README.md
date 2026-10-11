@@ -26,6 +26,18 @@ alembic current           # 查看目前版本
 alembic downgrade base    # 全部退回（會刪除資料表，只在開發時使用）
 ```
 
+## 載入主資料（科目表、付款方式）
+
+第一次建立資料庫後執行一次。可以重複執行：只新增缺少的資料，不會覆寫你在介面上改過的名稱、排序，也不會刪除任何資料；
+和既有資料的結構衝突（例如同一個科目代碼的五大類不同）時整批中止，不寫入任何資料。
+
+```bash
+python scripts/seed_master_data.py --dry-run   # 先看會新增什麼，不寫入
+python scripts/seed_master_data.py
+```
+
+內容在 `seeds/chart_of_accounts.yaml`。
+
 ## 建立帳號
 
 系統只允許一個帳號，第一次使用時建立（只需要 `DATABASE_URL`，不需要 `SECRET_KEY`）：
