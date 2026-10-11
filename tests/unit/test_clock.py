@@ -26,3 +26,10 @@ def test_iso_strings_sort_chronologically():
     earlier = clock.to_iso(datetime(2026, 1, 9, 23, 0, tzinfo=UTC))
     later = clock.to_iso(datetime(2026, 1, 10, 1, 0, tzinfo=UTC))
     assert earlier < later
+
+
+def test_today_uses_taipei_date(monkeypatch):
+    # UTC 10/7 16:30 = 台北 10/8 00:30
+    taipei = datetime(2026, 10, 7, 16, 30, tzinfo=UTC).astimezone(clock.APP_TIMEZONE)
+    monkeypatch.setattr(clock, "now", lambda: taipei)
+    assert clock.today().isoformat() == "2026-10-08"

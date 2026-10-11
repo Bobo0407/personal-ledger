@@ -4,7 +4,7 @@
 因為格式與時區都固定，字串可以直接比較大小與排序。
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 APP_TIMEZONE = ZoneInfo("Asia/Taipei")
@@ -22,3 +22,8 @@ def to_iso(dt: datetime) -> str:
 
 def now_iso() -> str:
     return to_iso(now())
+
+
+def today() -> date:
+    """台北時區的今天。V11 未來日期、V13 與 balance() 的「截至今天」都以它為準。"""
+    return now().date()

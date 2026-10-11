@@ -25,6 +25,7 @@ from app.models import Account, CreditCardProfile
 from app.models.enums import AccountClass, AccountSubtype, TaxCategory
 from app.repositories import accounts as account_repo
 from app.services.errors import NotFound, RuleViolation
+from app.services.ledger_queries import balance  # noqa: F401  規格 7.1：accounts.balance()
 
 # 子類型與五大類的歸屬（Step 2 拍板）
 SUBTYPE_CLASSES: dict[str, frozenset[str]] = {

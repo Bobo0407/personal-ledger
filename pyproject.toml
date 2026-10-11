@@ -38,6 +38,8 @@ include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --import-mode=importlib"
+# 讓測試可以 import tests/ 底下的共用工具（例如 tests/ledger_helpers.py）
+pythonpath = ["."]
 
 [tool.ruff]
 target-version = "py312"
