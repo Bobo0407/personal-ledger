@@ -19,7 +19,11 @@ Step 3 實作的是「所有交易類型共用」的規則：
 - V11（確認）：交易日期晚於今天（台北日期）。
 - V13（提醒）：CASH／BANK 帳戶「截至今天」的餘額因為這筆交易而變少，且結果 < 0。
   未來日期的交易不影響今天的餘額，所以不會觸發。
-特定交易類型的規則（V06 轉帳、V07 退款、V15 帳務調整、V01 builder 輸入）在 Step 4–6 加入。
+- TXN_STRUCTURE（Step 4）：依 txn_type 檢查分錄結構，是 builder 之外的第二道防線，
+  見 txn_structure.py。
+
+使用者輸入層的規則（V01 金額 > 0、V06、表單必填欄位）在各 builder 的 check(form)，不在這裡；
+同一條規則只在一個地方實作。V07 退款在 Step 6、V15 帳務調整在 Step 5。
 """
 
 import re
@@ -35,7 +39,9 @@ from app.models import Account, Currency, Merchant, PaymentMethod, Setting
 from app.models.enums import AccountSubtype, LineRole, SystemAccountKey, TxnType
 from app.repositories import accounts as account_repo
 from app.services.drafts import EntryDraft
+from app.services.issues import Issue
 from app.services.ledger_queries import raw_balance
+from app.services.txn_structure import check_structure
 
 LARGE_AMOUNT_SETTING = "large_amount_threshold"
 DEFAULT_LARGE_AMOUNT_THRESHOLD = 10_000  # 規格 6.10 的初始值；只在 settings 完全沒有這筆時使用
@@ -48,13 +54,6 @@ SYSTEM_ACCOUNT_TXN_TYPE = {
 }
 
 NEGATIVE_BALANCE_SUBTYPES = frozenset({AccountSubtype.CASH, AccountSubtype.BANK})
-
-
-@dataclass(frozen=True)
-class Issue:
-    code: str
-    message: str
-    line: int | None = None  # 第幾筆分錄（從 1 開始）；表頭欄位為 None
 
 
 @dataclass(frozen=True)
@@ -116,6 +115,9 @@ def validate(db: Session, draft: EntryDraft) -> ValidationResult:
     _check_header(db, draft, out)
     accounts = _check_postings(db, draft, out)
     if not out.errors:
+        # 交易結構（Step 4，P4）：只在分錄本身沒有問題時檢查，避免同一個錯誤重複出現
+        out.errors.extend(check_structure(db, draft, accounts))
+    if not out.errors:
         _check_confirmations(db, draft, out)
         _check_notices(db, draft, accounts, out)
     return out.result()
@@ -126,24 +128,24 @@ def validate(db: Session, draft: EntryDraft) -> ValidationResult:
 
 def _check_header(db: Session, draft: EntryDraft, out: _Collector) -> None:
     if draft.txn_date is None:
-        out.errors.append(Issue("V05", "請填寫日期"))
+        out.errors.append(Issue("V05", "請填寫日期", field="txn_date"))
     elif isinstance(draft.txn_date, datetime) or not isinstance(draft.txn_date, date):
-        out.errors.append(Issue("V05", "日期格式不正確"))
+        out.errors.append(Issue("V05", "日期格式不正確", field="txn_date"))
     if draft.txn_type not in set(TxnType):
         out.errors.append(Issue("TXN_TYPE", f"不認識的交易類型：{draft.txn_type}"))
 
     if draft.payment_method_id is not None:
         pm = db.get(PaymentMethod, draft.payment_method_id)
         if pm is None:
-            out.errors.append(Issue("V05", "找不到付款方式"))
+            out.errors.append(Issue("V05", "找不到付款方式", field="payment_method_id"))
         elif not pm.is_active:
-            out.errors.append(Issue("V04", f"「{pm.name}」已停用"))
+            out.errors.append(Issue("V04", f"「{pm.name}」已停用", field="payment_method_id"))
     if draft.merchant_id is not None:
         merchant = db.get(Merchant, draft.merchant_id)
         if merchant is None:
-            out.errors.append(Issue("V05", "找不到商家"))
+            out.errors.append(Issue("V05", "找不到商家", field="merchant_id"))
         elif not merchant.is_active:
-            out.errors.append(Issue("V04", f"「{merchant.name}」已停用"))
+            out.errors.append(Issue("V04", f"「{merchant.name}」已停用", field="merchant_id"))
 
 
 def _check_postings(db: Session, draft: EntryDraft, out: _Collector) -> dict[int, Account]:
