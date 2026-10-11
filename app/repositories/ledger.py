@@ -17,7 +17,7 @@ from sqlalchemy import Select, exists, func, select
 from sqlalchemy.orm import Session
 
 from app.models import Account, Posting, Transaction
-from app.models.enums import TxnStatus
+from app.models.enums import TxnStatus, TxnType
 
 
 def active_postings() -> Select:
@@ -43,14 +43,31 @@ def active_sum_for_accounts(
     account_ids: Iterable[int],
     start: date | None = None,
     end: date | None = None,
+    txn_type: str | None = None,
 ) -> int:
-    """指定科目在期間內（起訖日都包含）的有效分錄加總，原始正負號。"""
+    """指定科目在期間內（起訖日都包含）的有效分錄加總，原始正負號；可限定交易類型。"""
     ids = list(account_ids)
     if not ids:
         return 0
     stmt = active_postings().with_only_columns(func.coalesce(func.sum(Posting.amount), 0))
-    stmt = _date_range(stmt.where(Posting.account_id.in_(ids)), start, end)
-    return int(db.scalar(stmt) or 0)
+    stmt = stmt.where(Posting.account_id.in_(ids))
+    if txn_type is not None:
+        stmt = stmt.where(Transaction.txn_type == txn_type)
+    return int(db.scalar(_date_range(stmt, start, end)) or 0)
+
+
+def accounts_with_active_opening(db: Session, account_ids: Iterable[int]) -> set[int]:
+    """這些科目中，已經有有效 OPENING 分錄的科目 id（決策 D12）。"""
+    ids = list(account_ids)
+    if not ids:
+        return set()
+    stmt = (
+        active_postings()
+        .with_only_columns(Posting.account_id)
+        .where(Transaction.txn_type == TxnType.OPENING.value, Posting.account_id.in_(ids))
+        .distinct()
+    )
+    return set(db.scalars(stmt))
 
 
 def active_sum_for_class(

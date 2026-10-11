@@ -19,11 +19,15 @@ Step 3 實作的是「所有交易類型共用」的規則：
 - V11（確認）：交易日期晚於今天（台北日期）。
 - V13（提醒）：CASH／BANK 帳戶「截至今天」的餘額因為這筆交易而變少，且結果 < 0。
   未來日期的交易不影響今天的餘額，所以不會觸發。
-- TXN_STRUCTURE（Step 4）：依 txn_type 檢查分錄結構，是 builder 之外的第二道防線，
+- TXN_STRUCTURE（Step 4、5）：依 txn_type 檢查分錄結構，是 builder 之外的第二道防線，
   見 txn_structure.py。
+- V15（Step 5）：ADJUSTMENT 備註必填（field=description），且只能調整一個資產或負債帳戶，
+  對方固定是「帳務調整」系統科目。
+- OPENING_EXISTS（Step 5，D12）：同一帳戶只能有一筆有效期初分錄；同一筆期初裡也不能重複。
+- V10 不套用在 OPENING、PAYROLL（R4）。
 
 使用者輸入層的規則（V01 金額 > 0、V06、表單必填欄位）在各 builder 的 check(form)，不在這裡；
-同一條規則只在一個地方實作。V07 退款在 Step 6、V15 帳務調整在 Step 5。
+同一條規則只在一個地方實作。V07 退款在 Step 6。
 """
 
 import re
@@ -36,8 +40,9 @@ from sqlalchemy.orm import Session
 
 from app import clock
 from app.models import Account, Currency, Merchant, PaymentMethod, Setting
-from app.models.enums import AccountSubtype, LineRole, SystemAccountKey, TxnType
+from app.models.enums import AccountClass, AccountSubtype, LineRole, SystemAccountKey, TxnType
 from app.repositories import accounts as account_repo
+from app.repositories import ledger as ledger_repo
 from app.services.drafts import EntryDraft
 from app.services.issues import Issue
 from app.services.ledger_queries import raw_balance
@@ -46,6 +51,9 @@ from app.services.txn_structure import check_structure
 LARGE_AMOUNT_SETTING = "large_amount_threshold"
 DEFAULT_LARGE_AMOUNT_THRESHOLD = 10_000  # 規格 6.10 的初始值；只在 settings 完全沒有這筆時使用
 POSITIVE_INT = re.compile(r"[1-9][0-9]*")
+
+# V10 不套用的交易類型：金額本來就經常超過門檻，「多打一個 0」的確認只會變成固定噪音（R4）
+V10_EXEMPT = frozenset({TxnType.OPENING, TxnType.PAYROLL})
 
 # 系統科目只能出現在對應的交易類型（Q8）
 SYSTEM_ACCOUNT_TXN_TYPE = {
@@ -117,6 +125,9 @@ def validate(db: Session, draft: EntryDraft) -> ValidationResult:
     if not out.errors:
         # 交易結構（Step 4，P4）：只在分錄本身沒有問題時檢查，避免同一個錯誤重複出現
         out.errors.extend(check_structure(db, draft, accounts))
+        _check_adjustment(draft, accounts, out)
+    if not out.errors:
+        _check_opening_exists(db, draft, accounts, out)
     if not out.errors:
         _check_confirmations(db, draft, out)
         _check_notices(db, draft, accounts, out)
@@ -133,6 +144,10 @@ def _check_header(db: Session, draft: EntryDraft, out: _Collector) -> None:
         out.errors.append(Issue("V05", "日期格式不正確", field="txn_date"))
     if draft.txn_type not in set(TxnType):
         out.errors.append(Issue("TXN_TYPE", f"不認識的交易類型：{draft.txn_type}"))
+    if draft.txn_type == TxnType.ADJUSTMENT and not (draft.description or "").strip():
+        out.errors.append(
+            Issue("V15", "請說明調整原因，例如「月底現金盤點短少」", field="description")
+        )
 
     if draft.payment_method_id is not None:
         pm = db.get(PaymentMethod, draft.payment_method_id)
@@ -224,9 +239,48 @@ def large_amount_threshold(db: Session) -> int:
     return int(setting.value)
 
 
+def _check_adjustment(draft: EntryDraft, accounts: dict[int, Account], out: _Collector) -> None:
+    """V15：帳務調整只能調整一個資產或負債帳戶，對方固定是「帳務調整」系統科目。"""
+    if draft.txn_type != TxnType.ADJUSTMENT:
+        return
+    lines = [accounts[p.account_id] for p in draft.postings]
+    system = [a for a in lines if a.system_key == SystemAccountKey.ADJUSTMENT]
+    others = [a for a in lines if a.system_key != SystemAccountKey.ADJUSTMENT]
+    if (
+        len(lines) != 2
+        or len(system) != 1
+        or len(others) != 1
+        or others[0].account_class not in (AccountClass.ASSET, AccountClass.LIABILITY)
+    ):
+        out.errors.append(
+            Issue("V15", "帳務調整只能調整一個資產或負債帳戶，對方科目固定為「帳務調整」")
+        )
+
+
+def _check_opening_exists(
+    db: Session, draft: EntryDraft, accounts: dict[int, Account], out: _Collector
+) -> None:
+    """D12：同一帳戶只能有一筆有效的期初分錄（已刪除的期初不算）。"""
+    if draft.txn_type != TxnType.OPENING:
+        return
+    seen: set[int] = set()
+    for line, p in enumerate(draft.postings, start=1):
+        if accounts[p.account_id].system_key is not None:
+            continue  # 期初權益每筆期初交易都會出現
+        if p.account_id in seen:
+            name = accounts[p.account_id].name
+            out.errors.append(Issue("OPENING_EXISTS", f"「{name}」在這筆期初中重複", line))
+        seen.add(p.account_id)
+    existing = ledger_repo.accounts_with_active_opening(db, seen)
+    for line, p in enumerate(draft.postings, start=1):
+        if p.account_id in existing:
+            name = accounts[p.account_id].name
+            out.errors.append(Issue("OPENING_EXISTS", f"「{name}」已經有期初餘額", line))
+
+
 def _check_confirmations(db: Session, draft: EntryDraft, out: _Collector) -> None:
     magnitude = transaction_magnitude(draft)
-    if magnitude > large_amount_threshold(db):
+    if draft.txn_type not in V10_EXEMPT and magnitude > large_amount_threshold(db):
         out.confirmations.append(Issue("V10", f"這筆 {magnitude:,} 元，確定金額沒有多打一個 0？"))
     days = (draft.txn_date - clock.today()).days
     if days > 0:

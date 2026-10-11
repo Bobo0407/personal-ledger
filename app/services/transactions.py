@@ -14,21 +14,29 @@ from collections.abc import Iterable
 from sqlalchemy.orm import Session
 
 from app.models import PaymentMethod
-from app.models.enums import AccountSubtype
+from app.models.enums import AccountSubtype, SystemAccountKey
 from app.repositories import accounts as account_repo
 from app.services import ledger
+from app.services.accounts import system_account
 from app.services.entries import (
+    AdjustmentEntry,
+    AdjustmentForm,
     CardPaymentEntry,
     CardPaymentForm,
     ExpenseEntry,
     ExpenseForm,
     IncomeEntry,
     IncomeForm,
+    ManualForm,
+    OpeningEntry,
+    OpeningForm,
+    PayrollEntry,
     TransferEntry,
     TransferForm,
 )
 from app.services.issues import Issue
 from app.services.ledger import PostResult
+from app.services.ledger_queries import NORMAL_SIGN
 from app.services.txn_structure import CODE as STRUCTURE_CODE
 from app.services.validation import ValidationFailed, ValidationResult
 
@@ -92,3 +100,46 @@ def record_card_payment(
 ) -> PostResult:
     _raise_if(CardPaymentEntry.check(form))
     return ledger.post(db, CardPaymentEntry.build(form), confirmed=confirmed, user_id=user_id)
+
+
+# --- 特殊交易（Step 5）---------------------------------------------------------------
+
+
+def _sign(db: Session, account_id: int | None) -> int:
+    """科目的正常方向正負號；找不到的科目先用 +1，交給 validation 的 V05 擋下。"""
+    account = account_repo.get(db, account_id) if account_id is not None else None
+    return NORMAL_SIGN[account.account_class] if account is not None else 1
+
+
+def record_opening(
+    db: Session, form: OpeningForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
+) -> PostResult:
+    """期初餘額。對方科目固定是「期初權益」系統科目（找不到時丟 MissingSystemAccount）。"""
+    _raise_if(OpeningEntry.check(form))
+    equity = system_account(db, SystemAccountKey.OPENING_EQUITY)
+    signs = {line.account_id: _sign(db, line.account_id) for line in form.lines}
+    draft = OpeningEntry.build(form, opening_equity_id=equity.id, signs=signs)
+    return ledger.post(db, draft, confirmed=confirmed, user_id=user_id)
+
+
+def record_adjustment(
+    db: Session,
+    form: AdjustmentForm,
+    *,
+    confirmed: Iterable[str] = (),
+    user_id: int | None = None,
+) -> PostResult:
+    """帳務調整。對方科目固定是「帳務調整」系統科目（找不到時丟 MissingSystemAccount）。"""
+    _raise_if(AdjustmentEntry.check(form))
+    adjustment = system_account(db, SystemAccountKey.ADJUSTMENT)
+    draft = AdjustmentEntry.build(
+        form, adjustment_account_id=adjustment.id, sign=_sign(db, form.account_id)
+    )
+    return ledger.post(db, draft, confirmed=confirmed, user_id=user_id)
+
+
+def record_payroll(
+    db: Session, form: ManualForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
+) -> PostResult:
+    """薪資：txn_type = PAYROLL 的多分錄交易（R7）。"""
+    return ledger.post(db, PayrollEntry.build(form), confirmed=confirmed, user_id=user_id)

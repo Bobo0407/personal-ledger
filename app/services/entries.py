@@ -309,3 +309,121 @@ class CardPaymentEntry:
             ),
             description=clean_optional(form.description),
         )
+
+
+# --- 特殊交易的 builder（Step 5）-----------------------------------------------------
+#
+# 系統科目（期初權益、帳務調整）與各帳戶的正負號都由 transactions.py 查好後傳入；
+# Form 沒有讓使用者選系統科目的欄位，builder 也不查資料庫。
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+@dataclass(frozen=True)
+class OpeningLine:
+    account_id: int | None
+    balance: int | None  # 正常方向：資產 = 持有金額、負債 = 欠款；負數表示透支或溢繳
+
+
+@dataclass(frozen=True)
+class OpeningForm:
+    txn_date: date | None  # 上線日；不要求早於其他交易（R11）
+    lines: tuple[OpeningLine, ...]
+    description: str | None = None
+
+
+class OpeningEntry:
+    """期初餘額（F04、T13）。
+
+    每個帳戶一筆分錄：balance × 正負號（資產 +、負債 −）；對方是「期初權益」系統科目，
+    金額為其他分錄加總的相反數。0 元的行略過；加總剛好為 0 時不建立期初權益分錄（R2）。
+    """
+
+    txn_type = TxnType.OPENING
+
+    @staticmethod
+    def check(form: OpeningForm) -> tuple[Issue, ...]:
+        issues: list[Issue] = []
+        if not form.lines:
+            issues.append(Issue("V05", "請至少填寫一個帳戶的期初餘額", field="lines"))
+        for i, line in enumerate(form.lines):
+            if line.account_id is None:
+                issues.append(Issue("V05", "請選擇帳戶", field=f"lines[{i}].account_id"))
+            if line.balance is None:
+                issues.append(Issue("V05", "請填寫期初餘額", field=f"lines[{i}].balance"))
+            elif not _is_int(line.balance):
+                issues.append(
+                    Issue("OPENING_BALANCE", "期初餘額必須是整數", field=f"lines[{i}].balance")
+                )
+        return tuple(issues)
+
+    @classmethod
+    def build(
+        cls, form: OpeningForm, *, opening_equity_id: int, signs: dict[int, int]
+    ) -> EntryDraft:
+        lines = [
+            PostingDraft(line.account_id, line.balance * signs.get(line.account_id, 1))
+            for line in form.lines
+            if line.balance != 0
+        ]
+        total = sum(p.amount for p in lines)
+        if total != 0:
+            lines.append(PostingDraft(opening_equity_id, -total))
+        return EntryDraft(
+            txn_date=form.txn_date,
+            txn_type=cls.txn_type.value,
+            postings=tuple(lines),
+            description=clean_optional(form.description),
+        )
+
+
+@dataclass(frozen=True)
+class AdjustmentForm:
+    txn_date: date | None
+    account_id: int | None  # 要調整的資產或負債帳戶
+    delta: int | None  # 正常方向的差額：+ 調高、− 調低；負債 +100 = 欠款增加 100（D11）
+    description: str | None  # V15：必填，由 validation.py 檢查
+
+
+class AdjustmentEntry:
+    """帳務調整（UF11、T33）。對方固定是「帳務調整」系統科目，使用者不能選。
+
+    分錄：被調整的帳戶 delta × 正負號、帳務調整 −(delta × 正負號)。
+    只碰資產／負債與權益，所以不影響收入、支出與預算。
+    """
+
+    txn_type = TxnType.ADJUSTMENT
+
+    @staticmethod
+    def check(form: AdjustmentForm) -> tuple[Issue, ...]:
+        issues: list[Issue] = []
+        _required_id(issues, form.account_id, "account_id", "要調整的帳戶")
+        if form.delta is None:
+            issues.append(Issue("V05", "請填寫調整金額", field="delta"))
+        elif not _is_int(form.delta) or form.delta == 0:
+            issues.append(Issue("ADJUSTMENT_DELTA", "調整金額必須是不為 0 的整數", field="delta"))
+        return tuple(issues)
+
+    @classmethod
+    def build(cls, form: AdjustmentForm, *, adjustment_account_id: int, sign: int) -> EntryDraft:
+        amount = form.delta * sign
+        return EntryDraft(
+            txn_date=form.txn_date,
+            txn_type=cls.txn_type.value,
+            postings=(
+                PostingDraft(form.account_id, amount),
+                PostingDraft(adjustment_account_id, -amount),
+            ),
+            description=clean_optional(form.description),
+        )
+
+
+class PayrollEntry(ManualEntry):
+    """薪資（UF08、T10；決策 D10、R7）：V1 用多分錄交易，共用 ManualEntry 的分錄產生機制，
+    但 txn_type 存成 PAYROLL，讓日後的年度所得彙總與 V1.5 薪資單不必重新推導。
+    0 元欄位（例如扣繳 0）不產生分錄；line_role 可選填（R9）。
+    """
+
+    txn_type = TxnType.PAYROLL

@@ -1,4 +1,4 @@
-"""最小帳務查詢（P1 決策 D15、Q5）：餘額、期間合計、大類合計、淨資產。
+"""最小帳務查詢（P1 決策 D15、Q5）：餘額、期間合計、大類合計、淨資產、帳務調整合計。
 
 - 全部建立在 repositories.ledger.active_postings() 上，只計算有效分錄。
 - balance()、period_total()、class_total()、net_worth() 一律回傳「正常餘額方向」：
@@ -16,10 +16,10 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from app import clock
-from app.models.enums import AccountClass
+from app.models.enums import AccountClass, SystemAccountKey, TxnType
 from app.repositories import accounts as account_repo
 from app.repositories import ledger as ledger_repo
-from app.services.errors import NotFound
+from app.services.errors import MissingSystemAccount, NotFound
 
 NORMAL_SIGN: dict[str, int] = {
     AccountClass.ASSET: 1,
@@ -78,3 +78,19 @@ def net_worth(db: Session, as_of: date | None = None) -> int:
     assets = ledger_repo.active_sum_for_class(db, AccountClass.ASSET, end=as_of)
     liabilities = -ledger_repo.active_sum_for_class(db, AccountClass.LIABILITY, end=as_of)
     return assets - liabilities
+
+
+def adjustment_total(db: Session, start: date, end: date) -> int:
+    """帳務調整合計（規格 8.2、決策 R10）。
+
+    = 期間內 ADJUSTMENT 交易對「帳務調整」系統科目分錄加總的相反數。
+    正數代表帳戶餘額被調高、負數代表被調低；淨資產變化 = 本月結餘 + 帳務調整合計。
+    帳務調整不碰收入、費用科目，所以不影響 class_total(INCOME／EXPENSE) 與預算。
+    """
+    account = account_repo.get_by_system_key(db, SystemAccountKey.ADJUSTMENT)
+    if account is None:
+        raise MissingSystemAccount(SystemAccountKey.ADJUSTMENT)
+    raw = ledger_repo.active_sum_for_accounts(
+        db, [account.id], start, end, txn_type=TxnType.ADJUSTMENT
+    )
+    return -raw

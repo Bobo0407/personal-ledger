@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from app.models import Account, CreditCardProfile
 from app.models.enums import AccountClass, AccountSubtype, TaxCategory
 from app.repositories import accounts as account_repo
-from app.services.errors import NotFound, RuleViolation
+from app.services.errors import MissingSystemAccount, NotFound, RuleViolation
 from app.services.ledger_queries import balance  # noqa: F401  規格 7.1：accounts.balance()
 
 # 子類型與五大類的歸屬（Step 2 拍板）
@@ -111,6 +111,14 @@ def get_account(db: Session, account_id: int) -> Account:
     account = account_repo.get(db, account_id)
     if account is None:
         raise NotFound("科目", account_id)
+    return account
+
+
+def system_account(db: Session, system_key: str) -> Account:
+    """依 system_key 取得系統科目（期初權益、帳務調整）；不依賴固定 id（D2）。"""
+    account = account_repo.get_by_system_key(db, system_key)
+    if account is None:
+        raise MissingSystemAccount(system_key)
     return account
 
 

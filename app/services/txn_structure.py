@@ -19,13 +19,17 @@ CARD_PAYMENT
 - 剛好兩筆、不帶 line_role：信用卡（正）與 CASH／BANK 資產（負）。
 - 因此不可能出現費用、收入、權益分錄：繳卡費永遠不會計入支出。
 - 不使用付款方式。
-其他類型（MANUAL 等）在這裡不檢查；OPENING、ADJUSTMENT、PAYROLL 在 Step 5，REFUND 在 Step 6。
+OPENING（Step 5）
+- 只能有資產或負債帳戶，加上最多一筆「期初權益」；加總剛好為 0 時不建立期初權益分錄（R2）。
+PAYROLL（Step 5，R8 最低結構）
+- 至少一筆收入分錄；收入分錄必須是貸方（負數）；不能有權益分錄。
+ADJUSTMENT 的規則是 V15，在 validation.py；MANUAL 不在這裡檢查；REFUND 在 Step 6。
 """
 
 from sqlalchemy.orm import Session
 
 from app.models import Account, PaymentMethod
-from app.models.enums import AccountClass, AccountSubtype, LineRole, TxnType
+from app.models.enums import AccountClass, AccountSubtype, LineRole, SystemAccountKey, TxnType
 from app.services.drafts import EntryDraft
 from app.services.issues import Issue
 
@@ -151,9 +155,41 @@ def _card_payment(db: Session, draft: EntryDraft, accounts: dict[int, Account]) 
     return issues
 
 
+def _opening(db: Session, draft: EntryDraft, accounts: dict[int, Account]) -> list[Issue]:
+    """期初：只能有資產或負債帳戶，加上最多一筆「期初權益」（R1、R2）。"""
+    issues: list[Issue] = []
+    equity_lines = 0
+    for line, _, account in _lines(draft, accounts):
+        if account.system_key == SystemAccountKey.OPENING_EQUITY:
+            equity_lines += 1
+        elif account.account_class not in BALANCE_SHEET:
+            issues.append(_issue(f"期初餘額只能設定資產或負債帳戶，「{account.name}」不是", line))
+    if equity_lines > 1:
+        issues.append(_issue("一筆期初交易只能有一筆期初權益分錄"))
+    if draft.payment_method_id is not None:
+        issues.append(_issue("期初交易不使用付款方式"))
+    return issues
+
+
+def _payroll(db: Session, draft: EntryDraft, accounts: dict[int, Account]) -> list[Issue]:
+    """薪資（R8 最低結構）：至少一筆收入分錄、收入分錄都是貸方、不能有權益分錄。"""
+    issues: list[Issue] = []
+    lines = _lines(draft, accounts)
+    if not any(a.account_class == AccountClass.INCOME for _, _, a in lines):
+        issues.append(_issue("薪資交易至少要有一筆收入分錄"))
+    for line, p, account in lines:
+        if account.account_class == AccountClass.INCOME and p.amount > 0:
+            issues.append(_issue("薪資的收入分錄必須是貸方（負數）", line))
+        if account.account_class == AccountClass.EQUITY:
+            issues.append(_issue("薪資交易不能有權益分錄", line))
+    return issues
+
+
 _CHECKERS = {
     TxnType.EXPENSE: _expense,
     TxnType.INCOME: _income,
     TxnType.TRANSFER: _transfer,
     TxnType.CARD_PAYMENT: _card_payment,
+    TxnType.OPENING: _opening,
+    TxnType.PAYROLL: _payroll,
 }

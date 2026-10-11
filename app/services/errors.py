@@ -19,3 +19,13 @@ class RuleViolation(Exception):
 class NotFound(RuleViolation):
     def __init__(self, what: str, key: object) -> None:
         super().__init__("NOT_FOUND", f"找不到{what}：{key}")
+
+
+class MissingSystemAccount(RuntimeError):
+    """找不到系統科目（例如還沒執行 seed）。這是系統／主資料異常，不是使用者輸入錯誤（R6）。"""
+
+    def __init__(self, system_key: str) -> None:
+        super().__init__(
+            f"找不到系統科目 {system_key}，請先執行 python scripts/seed_master_data.py"
+        )
+        self.system_key = system_key
