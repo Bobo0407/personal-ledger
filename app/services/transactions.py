@@ -1,23 +1,26 @@
-"""交易記錄的流程串接（P1 Step 4 決策 P1、P3、D9）。
+"""交易記錄的流程串接（P1 Step 4 決策 P1、P3、D9；Step 6 修改、刪除、還原與退款）。
 
-P2 的 router 只呼叫這裡的 record_*，不碰借貸邏輯、不自己挑 builder、不直接寫分錄。
+P2 的 router 只呼叫這裡的 record_*／update_transaction／delete_transaction／restore_transaction，
+不碰借貸邏輯、不自己挑 builder、不直接寫分錄。
 
-每個 record_* 的流程：
+每種交易的草稿產生流程（_draft_*，新增與修改共用）：
 1. builder.check(form)：表單語意（V01、V06、必填欄位）。有問題就丟 ValidationFailed，不往下做。
-2. 查詢需要的主資料：付款方式 → 實際扣款帳戶（P1）；轉入帳戶是不是信用卡（D9）。
+2. 查詢需要的主資料：付款方式 → 實際扣款帳戶（P1）；轉入帳戶是不是信用卡（D9）；
+   退款的原交易（U7）。
 3. builder.build(...)：純結構轉換成 EntryDraft。
-4. ledger.post(...)：驗證帳務不變條件並寫入；這是唯一的寫入入口。
+之後交給 ledger.post()（新增）或 ledger.update()（修改）；這兩個是唯一的寫入入口。
 """
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from sqlalchemy.orm import Session
 
-from app.models import PaymentMethod
-from app.models.enums import AccountSubtype, SystemAccountKey
+from app.models import PaymentMethod, Transaction
+from app.models.enums import AccountSubtype, SystemAccountKey, TxnType
 from app.repositories import accounts as account_repo
 from app.services import ledger
 from app.services.accounts import system_account
+from app.services.drafts import EntryDraft
 from app.services.entries import (
     AdjustmentEntry,
     AdjustmentForm,
@@ -27,18 +30,27 @@ from app.services.entries import (
     ExpenseForm,
     IncomeEntry,
     IncomeForm,
+    ManualEntry,
     ManualForm,
     OpeningEntry,
     OpeningForm,
     PayrollEntry,
+    RefundEntry,
+    RefundForm,
     TransferEntry,
     TransferForm,
 )
+from app.services.errors import NotFound
 from app.services.issues import Issue
 from app.services.ledger import PostResult
 from app.services.ledger_queries import NORMAL_SIGN
 from app.services.txn_structure import CODE as STRUCTURE_CODE
-from app.services.validation import ValidationFailed, ValidationResult
+from app.services.validation import (
+    ValidationFailed,
+    ValidationResult,
+    main_posting,
+    refund_original,
+)
 
 
 def _raise_if(issues: Iterable[Issue]) -> None:
@@ -47,36 +59,43 @@ def _raise_if(issues: Iterable[Issue]) -> None:
         raise ValidationFailed(ValidationResult(errors=issues))
 
 
-def record_expense(
-    db: Session, form: ExpenseForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
-) -> PostResult:
-    _raise_if(ExpenseEntry.check(form))
-    pm = db.get(PaymentMethod, form.payment_method_id)
+def _payment_method(db: Session, payment_method_id: int) -> PaymentMethod:
+    pm = db.get(PaymentMethod, payment_method_id)
     if pm is None:
         _raise_if([Issue("V05", "找不到付款方式", field="payment_method_id")])
+    return pm
+
+
+def _sign(db: Session, account_id: int | None) -> int:
+    """科目的正常方向正負號；找不到的科目先用 +1，交給 validation 的 V05 擋下。"""
+    account = account_repo.get(db, account_id) if account_id is not None else None
+    return NORMAL_SIGN[account.account_class] if account is not None else 1
+
+
+# --- 草稿產生（新增與修改共用）------------------------------------------------------
+
+
+def _draft_expense(db: Session, form: ExpenseForm) -> EntryDraft:
+    _raise_if(ExpenseEntry.check(form))
+    pm = _payment_method(db, form.payment_method_id)
     # 付款方式只是管道：LINE Pay → 郵局、聯邦信用卡 → 聯邦信用卡（負債）
-    draft = ExpenseEntry.build(form, payment_account_id=pm.account_id)
-    return ledger.post(db, draft, confirmed=confirmed, user_id=user_id)
+    return ExpenseEntry.build(form, payment_account_id=pm.account_id)
 
 
-def record_income(
-    db: Session, form: IncomeForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
-) -> PostResult:
+def _draft_income(db: Session, form: IncomeForm) -> EntryDraft:
     _raise_if(IncomeEntry.check(form))
-    return ledger.post(db, IncomeEntry.build(form), confirmed=confirmed, user_id=user_id)
+    return IncomeEntry.build(form)
 
 
-def record_transfer(
-    db: Session, form: TransferForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
-) -> PostResult:
-    """帳戶間轉帳。轉入帳戶是信用卡時自動改成信用卡繳款（D9）。"""
+def _draft_transfer(db: Session, form: TransferForm) -> EntryDraft:
+    """轉入帳戶是信用卡時自動改成信用卡繳款（D9）。"""
     _raise_if(TransferEntry.check(form))
     to_account = account_repo.get(db, form.to_account_id)
     if to_account is not None and to_account.subtype == AccountSubtype.CREDIT_CARD:
         if form.fee_amount:
             # 不支援的交易組合（不是缺欄位），所以用結構錯誤代碼而不是 V05
             _raise_if([Issue(STRUCTURE_CODE, "信用卡繳款不支援手續費", field="fee_amount")])
-        return record_card_payment(
+        return _draft_card_payment(
             db,
             CardPaymentForm(
                 txn_date=form.txn_date,
@@ -85,10 +104,67 @@ def record_transfer(
                 from_account_id=form.from_account_id,
                 description=form.description,
             ),
-            confirmed=confirmed,
-            user_id=user_id,
         )
-    return ledger.post(db, TransferEntry.build(form), confirmed=confirmed, user_id=user_id)
+    return TransferEntry.build(form)
+
+
+def _draft_card_payment(db: Session, form: CardPaymentForm) -> EntryDraft:
+    _raise_if(CardPaymentEntry.check(form))
+    return CardPaymentEntry.build(form)
+
+
+def _draft_opening(db: Session, form: OpeningForm) -> EntryDraft:
+    """期初餘額。對方科目固定是「期初權益」系統科目（找不到時丟 MissingSystemAccount）。"""
+    _raise_if(OpeningEntry.check(form))
+    equity = system_account(db, SystemAccountKey.OPENING_EQUITY)
+    signs = {line.account_id: _sign(db, line.account_id) for line in form.lines}
+    return OpeningEntry.build(form, opening_equity_id=equity.id, signs=signs)
+
+
+def _draft_adjustment(db: Session, form: AdjustmentForm) -> EntryDraft:
+    """帳務調整。對方科目固定是「帳務調整」系統科目（找不到時丟 MissingSystemAccount）。"""
+    _raise_if(AdjustmentEntry.check(form))
+    adjustment = system_account(db, SystemAccountKey.ADJUSTMENT)
+    return AdjustmentEntry.build(
+        form, adjustment_account_id=adjustment.id, sign=_sign(db, form.account_id)
+    )
+
+
+def _draft_refund(db: Session, form: RefundForm) -> EntryDraft:
+    """退款：支出科目、商家、不計入預算都從原交易帶入（U7）。"""
+    _raise_if(RefundEntry.check(form))
+    original, issues = refund_original(db, form.original_txn_id)
+    _raise_if(issues)
+    pm = _payment_method(db, form.payment_method_id)
+    return RefundEntry.build(
+        form,
+        payment_account_id=pm.account_id,
+        main_account_id=main_posting(original.postings).account_id,
+        merchant_id=original.merchant_id,
+        exclude_from_budget=original.exclude_from_budget,
+    )
+
+
+# --- 新增 -------------------------------------------------------------------------
+
+
+def record_expense(
+    db: Session, form: ExpenseForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
+) -> PostResult:
+    return ledger.post(db, _draft_expense(db, form), confirmed=confirmed, user_id=user_id)
+
+
+def record_income(
+    db: Session, form: IncomeForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
+) -> PostResult:
+    return ledger.post(db, _draft_income(db, form), confirmed=confirmed, user_id=user_id)
+
+
+def record_transfer(
+    db: Session, form: TransferForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
+) -> PostResult:
+    """帳戶間轉帳。轉入帳戶是信用卡時自動改成信用卡繳款（D9）。"""
+    return ledger.post(db, _draft_transfer(db, form), confirmed=confirmed, user_id=user_id)
 
 
 def record_card_payment(
@@ -98,28 +174,13 @@ def record_card_payment(
     confirmed: Iterable[str] = (),
     user_id: int | None = None,
 ) -> PostResult:
-    _raise_if(CardPaymentEntry.check(form))
-    return ledger.post(db, CardPaymentEntry.build(form), confirmed=confirmed, user_id=user_id)
-
-
-# --- 特殊交易（Step 5）---------------------------------------------------------------
-
-
-def _sign(db: Session, account_id: int | None) -> int:
-    """科目的正常方向正負號；找不到的科目先用 +1，交給 validation 的 V05 擋下。"""
-    account = account_repo.get(db, account_id) if account_id is not None else None
-    return NORMAL_SIGN[account.account_class] if account is not None else 1
+    return ledger.post(db, _draft_card_payment(db, form), confirmed=confirmed, user_id=user_id)
 
 
 def record_opening(
     db: Session, form: OpeningForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
 ) -> PostResult:
-    """期初餘額。對方科目固定是「期初權益」系統科目（找不到時丟 MissingSystemAccount）。"""
-    _raise_if(OpeningEntry.check(form))
-    equity = system_account(db, SystemAccountKey.OPENING_EQUITY)
-    signs = {line.account_id: _sign(db, line.account_id) for line in form.lines}
-    draft = OpeningEntry.build(form, opening_equity_id=equity.id, signs=signs)
-    return ledger.post(db, draft, confirmed=confirmed, user_id=user_id)
+    return ledger.post(db, _draft_opening(db, form), confirmed=confirmed, user_id=user_id)
 
 
 def record_adjustment(
@@ -129,13 +190,7 @@ def record_adjustment(
     confirmed: Iterable[str] = (),
     user_id: int | None = None,
 ) -> PostResult:
-    """帳務調整。對方科目固定是「帳務調整」系統科目（找不到時丟 MissingSystemAccount）。"""
-    _raise_if(AdjustmentEntry.check(form))
-    adjustment = system_account(db, SystemAccountKey.ADJUSTMENT)
-    draft = AdjustmentEntry.build(
-        form, adjustment_account_id=adjustment.id, sign=_sign(db, form.account_id)
-    )
-    return ledger.post(db, draft, confirmed=confirmed, user_id=user_id)
+    return ledger.post(db, _draft_adjustment(db, form), confirmed=confirmed, user_id=user_id)
 
 
 def record_payroll(
@@ -143,3 +198,51 @@ def record_payroll(
 ) -> PostResult:
     """薪資：txn_type = PAYROLL 的多分錄交易（R7）。"""
     return ledger.post(db, PayrollEntry.build(form), confirmed=confirmed, user_id=user_id)
+
+
+def record_refund(
+    db: Session, form: RefundForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
+) -> PostResult:
+    return ledger.post(db, _draft_refund(db, form), confirmed=confirmed, user_id=user_id)
+
+
+# --- 修改、刪除、還原（Step 6）---------------------------------------------------------
+
+_DRAFTERS: dict[type, Callable[[Session, object], EntryDraft]] = {
+    ExpenseForm: _draft_expense,
+    IncomeForm: _draft_income,
+    TransferForm: _draft_transfer,
+    CardPaymentForm: _draft_card_payment,
+    OpeningForm: _draft_opening,
+    AdjustmentForm: _draft_adjustment,
+    RefundForm: _draft_refund,
+}
+
+
+def update_transaction(
+    db: Session,
+    txn_id: int,
+    form: object,
+    *,
+    confirmed: Iterable[str] = (),
+    user_id: int | None = None,
+) -> PostResult:
+    """用表單修改既有交易。表單類型決定交易類型；與原交易不同時由 ledger.update
+    回報 TXN_TYPE_IMMUTABLE（U1）。ManualForm 依原交易決定是 MANUAL 還是 PAYROLL。"""
+    if isinstance(form, ManualForm):
+        txn = db.get(Transaction, txn_id)
+        if txn is None:
+            raise NotFound("交易", txn_id)
+        builder = PayrollEntry if txn.txn_type == TxnType.PAYROLL else ManualEntry
+        draft = builder.build(form)
+    else:
+        draft = _DRAFTERS[type(form)](db, form)
+    return ledger.update(db, txn_id, draft, confirmed=confirmed, user_id=user_id)
+
+
+def delete_transaction(db: Session, txn_id: int, *, user_id: int | None = None) -> None:
+    ledger.soft_delete(db, txn_id, user_id=user_id)
+
+
+def restore_transaction(db: Session, txn_id: int, *, user_id: int | None = None) -> PostResult:
+    return ledger.restore(db, txn_id, user_id=user_id)

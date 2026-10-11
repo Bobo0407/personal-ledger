@@ -8,6 +8,7 @@
 
 例外（規格 5.4）：帳平檢查要看全部交易（含已刪除與草稿），使用名稱明確寫著「全部」的
 all_transaction_sums() 與 all_postings_on_non_leaf_accounts()，不得用於餘額或報表。
+invoice_in_use() 只用於發票號碼唯一性（與資料庫部分唯一索引相同條件），不是帳務加總。
 """
 
 from collections.abc import Iterable
@@ -17,7 +18,7 @@ from sqlalchemy import Select, exists, func, select
 from sqlalchemy.orm import Session
 
 from app.models import Account, Posting, Transaction
-from app.models.enums import TxnStatus, TxnType
+from app.models.enums import LineRole, TxnStatus, TxnType
 
 
 def active_postings() -> Select:
@@ -56,8 +57,10 @@ def active_sum_for_accounts(
     return int(db.scalar(_date_range(stmt, start, end)) or 0)
 
 
-def accounts_with_active_opening(db: Session, account_ids: Iterable[int]) -> set[int]:
-    """這些科目中，已經有有效 OPENING 分錄的科目 id（決策 D12）。"""
+def accounts_with_active_opening(
+    db: Session, account_ids: Iterable[int], exclude_txn_id: int | None = None
+) -> set[int]:
+    """這些科目中，已經有有效 OPENING 分錄的科目 id（決策 D12）；修改期初時排除自己。"""
     ids = list(account_ids)
     if not ids:
         return set()
@@ -67,7 +70,46 @@ def accounts_with_active_opening(db: Session, account_ids: Iterable[int]) -> set
         .where(Transaction.txn_type == TxnType.OPENING.value, Posting.account_id.in_(ids))
         .distinct()
     )
+    if exclude_txn_id is not None:
+        stmt = stmt.where(Transaction.id != exclude_txn_id)
     return set(db.scalars(stmt))
+
+
+def _active_refund_mains(original_id: int, exclude_txn_id: int | None) -> Select:
+    """原交易的有效退款（POSTED、未刪除）中，沖回 MAIN 的分錄（決策 U8）。"""
+    stmt = active_postings().where(
+        Transaction.txn_type == TxnType.REFUND.value,
+        Transaction.related_txn_id == original_id,
+        Posting.line_role == LineRole.MAIN.value,
+    )
+    if exclude_txn_id is not None:
+        stmt = stmt.where(Transaction.id != exclude_txn_id)
+    return stmt
+
+
+def active_refunded_amount(db: Session, original_id: int, exclude_txn_id: int | None = None) -> int:
+    """已退金額（正數）＝有效退款 MAIN 分錄（貸方）加總的相反數；修改退款時排除自己。"""
+    stmt = _active_refund_mains(original_id, exclude_txn_id).with_only_columns(
+        func.coalesce(func.sum(Posting.amount), 0)
+    )
+    return -int(db.scalar(stmt) or 0)
+
+
+def earliest_active_refund_date(db: Session, original_id: int) -> str | None:
+    stmt = _active_refund_mains(original_id, None).with_only_columns(func.min(Transaction.txn_date))
+    return db.scalar(stmt)
+
+
+def invoice_in_use(db: Session, invoice_no: str, exclude_txn_id: int) -> bool:
+    """發票號碼是否已被其他未刪除的交易使用（與部分唯一索引的條件相同）。"""
+    stmt = select(
+        exists().where(
+            Transaction.invoice_no == invoice_no,
+            Transaction.deleted_at.is_(None),
+            Transaction.id != exclude_txn_id,
+        )
+    )
+    return bool(db.scalar(stmt))
 
 
 def active_sum_for_class(

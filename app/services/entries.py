@@ -2,7 +2,7 @@
 
 Builder 只做結構轉換：不查資料庫、不做業務驗證，所有規則在 validation.py。
 Step 3：ManualEntry；Step 4：Expense、Income、Transfer、CardPayment；
-Opening、Adjustment、Payroll 在 Step 5，Refund 在 Step 6。
+Opening、Adjustment、Payroll 在 Step 5；Refund 在 Step 6。
 """
 
 from dataclasses import dataclass
@@ -427,3 +427,59 @@ class PayrollEntry(ManualEntry):
     """
 
     txn_type = TxnType.PAYROLL
+
+
+# --- 退款（Step 6）-------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RefundForm:
+    original_txn_id: int | None  # 原支出交易；修改退款時不能換（U11）
+    txn_date: date | None
+    amount: int | None  # 退回的台幣金額；不支援原幣（U12）
+    payment_method_id: int | None  # 退回哪裡（U7：可以和原交易不同）
+    description: str | None = None
+
+
+class RefundEntry:
+    """退款（F12、UF05、T05、T06）。
+
+    分錄：付款方式對應的帳戶 +amount（退回現金／銀行；退回信用卡＝欠款減少）、
+    原交易的支出科目 −amount（MAIN，沖回支出）。
+    支出科目、商家、是否排除預算都從原交易帶入（U7），由 transactions.py 查好後傳進來；
+    使用者不能選。
+    """
+
+    txn_type = TxnType.REFUND
+
+    @staticmethod
+    def check(form: RefundForm) -> tuple[Issue, ...]:
+        issues: list[Issue] = []
+        _required_id(issues, form.original_txn_id, "original_txn_id", "原交易")
+        _required_amount(issues, form.amount)
+        _required_id(issues, form.payment_method_id, "payment_method_id", "退款方式")
+        return tuple(issues)
+
+    @classmethod
+    def build(
+        cls,
+        form: RefundForm,
+        *,
+        payment_account_id: int,
+        main_account_id: int,
+        merchant_id: int | None,
+        exclude_from_budget: bool,
+    ) -> EntryDraft:
+        return EntryDraft(
+            txn_date=form.txn_date,
+            txn_type=cls.txn_type.value,
+            postings=(
+                PostingDraft(payment_account_id, form.amount),
+                PostingDraft(main_account_id, -form.amount, LineRole.MAIN.value),
+            ),
+            description=clean_optional(form.description),
+            merchant_id=merchant_id,
+            payment_method_id=form.payment_method_id,
+            exclude_from_budget=exclude_from_budget,
+            related_txn_id=form.original_txn_id,
+        )

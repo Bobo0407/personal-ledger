@@ -23,7 +23,12 @@ OPENING（Step 5）
 - 只能有資產或負債帳戶，加上最多一筆「期初權益」；加總剛好為 0 時不建立期初權益分錄（R2）。
 PAYROLL（Step 5，R8 最低結構）
 - 至少一筆收入分錄；收入分錄必須是貸方（負數）；不能有權益分錄。
-ADJUSTMENT 的規則是 V15，在 validation.py；MANUAL 不在這裡檢查；REFUND 在 Step 6。
+REFUND（Step 6）
+- 剛好兩筆：一筆 MAIN（費用科目、負數，沖回支出）、
+  一筆退回分錄（line_role 為空，資產或負債、正數）；
+  退回分錄的帳戶等於付款方式對應的帳戶（必須有付款方式）。
+- 「MAIN 科目必須是原交易的支出科目」與退款金額上限（V07）要查原交易，在 validation.py。
+ADJUSTMENT 的規則是 V15，在 validation.py；MANUAL 不在這裡檢查。
 """
 
 from sqlalchemy.orm import Session
@@ -185,6 +190,28 @@ def _payroll(db: Session, draft: EntryDraft, accounts: dict[int, Account]) -> li
     return issues
 
 
+def _refund(db: Session, draft: EntryDraft, accounts: dict[int, Account]) -> list[Issue]:
+    lines = _lines(draft, accounts)
+    mains = [x for x in lines if x[1].line_role == LineRole.MAIN]
+    backs = [x for x in lines if x[1].line_role is None]
+    if len(lines) != 2 or len(mains) != 1 or len(backs) != 1:
+        return [_issue("退款必須剛好兩筆分錄：沖回支出（MAIN）與退回帳戶")]
+    issues: list[Issue] = []
+    line, main, main_account = mains[0]
+    if main_account.account_class != AccountClass.EXPENSE or main.amount >= 0:
+        issues.append(_issue("退款的 MAIN 分錄必須是記在費用科目的負數金額", line))
+    line, back, back_account = backs[0]
+    if back_account.account_class not in BALANCE_SHEET or back.amount <= 0:
+        issues.append(_issue("退回分錄必須是資產或負債帳戶的正數金額", line))
+    if draft.payment_method_id is None:
+        issues.append(_issue("退款必須有退款方式"))
+    else:
+        pm = db.get(PaymentMethod, draft.payment_method_id)
+        if pm is not None and pm.account_id != back.account_id:
+            issues.append(_issue(f"退回分錄的帳戶與退款方式「{pm.name}」的帳戶不一致", line))
+    return issues
+
+
 _CHECKERS = {
     TxnType.EXPENSE: _expense,
     TxnType.INCOME: _income,
@@ -192,4 +219,5 @@ _CHECKERS = {
     TxnType.CARD_PAYMENT: _card_payment,
     TxnType.OPENING: _opening,
     TxnType.PAYROLL: _payroll,
+    TxnType.REFUND: _refund,
 }

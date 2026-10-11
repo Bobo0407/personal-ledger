@@ -37,3 +37,63 @@ class EntryDraft:
     related_txn_id: int | None = None
     source: str = TxnSource.MANUAL.value
     source_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class ExistingTransaction:
+    """修改既有交易時，原版本的關鍵內容（Step 6）。validate() 用它做新舊版本比對：
+    D14 只檢查被改動的分錄、V10／V11 只在相關欄位改變時重問、V13 用淨變動判斷、
+    排除自己的 D12／V07，以及原交易有退款時的鎖定（REFUND_LOCKED）。"""
+
+    id: int
+    txn_type: str
+    txn_date: date
+    payment_method_id: int | None
+    merchant_id: int | None
+    exclude_from_budget: bool
+    related_txn_id: int | None
+    invoice_no: str | None
+    postings: tuple[PostingDraft, ...]
+
+    @classmethod
+    def from_model(cls, txn) -> "ExistingTransaction":
+        return cls(
+            id=txn.id,
+            txn_type=txn.txn_type,
+            txn_date=date.fromisoformat(txn.txn_date),
+            payment_method_id=txn.payment_method_id,
+            merchant_id=txn.merchant_id,
+            exclude_from_budget=txn.exclude_from_budget,
+            related_txn_id=txn.related_txn_id,
+            invoice_no=txn.invoice_no,
+            postings=tuple(posting_draft_of(p) for p in txn.postings),
+        )
+
+
+def posting_draft_of(posting) -> PostingDraft:
+    return PostingDraft(
+        account_id=posting.account_id,
+        amount=posting.amount,
+        line_role=posting.line_role,
+        original_currency=posting.original_currency,
+        original_amount_minor=posting.original_amount_minor,
+        memo=posting.memo,
+    )
+
+
+def draft_from_model(txn) -> EntryDraft:
+    """把資料庫中的交易轉回草稿（還原時重新檢查用）。"""
+    return EntryDraft(
+        txn_date=date.fromisoformat(txn.txn_date),
+        txn_type=txn.txn_type,
+        postings=tuple(posting_draft_of(p) for p in txn.postings),
+        description=txn.description,
+        merchant_id=txn.merchant_id,
+        payment_method_id=txn.payment_method_id,
+        voucher_type=txn.voucher_type,
+        invoice_no=txn.invoice_no,
+        exclude_from_budget=txn.exclude_from_budget,
+        related_txn_id=txn.related_txn_id,
+        source=txn.source,
+        source_ref=txn.source_ref,
+    )

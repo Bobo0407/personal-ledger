@@ -1,4 +1,4 @@
-"""特殊交易 builder 的純函式行為（Step 5）：Opening、Adjustment、Payroll。"""
+"""特殊交易 builder 的純函式行為：Opening、Adjustment、Payroll（Step 5）、Refund（Step 6）。"""
 
 from datetime import date
 
@@ -15,6 +15,8 @@ from app.services.entries import (
     OpeningForm,
     OpeningLine,
     PayrollEntry,
+    RefundEntry,
+    RefundForm,
 )
 
 D = date(2026, 10, 1)
@@ -127,3 +129,38 @@ def test_payroll_shares_manual_mechanism_but_is_payroll():
     assert draft.txn_type == "PAYROLL"
     assert [p.account_id for p in draft.postings] == [1, 3]  # 0 元欄位不產生分錄
     assert ManualEntry.build(form).txn_type == "MANUAL"
+
+
+# --- RefundEntry（Step 6）---------------------------------------------------------
+
+
+def test_refund_builder_reverses_main_and_copies_original_fields():
+    form = RefundForm(original_txn_id=7, txn_date=D, amount=800, payment_method_id=3)
+    draft = RefundEntry.build(
+        form, payment_account_id=CARD, main_account_id=41, merchant_id=5, exclude_from_budget=True
+    )
+    assert draft.txn_type == "REFUND"
+    assert draft.related_txn_id == 7
+    assert draft.payment_method_id == 3
+    assert (draft.merchant_id, draft.exclude_from_budget) == (5, True)
+    assert draft.postings == (PostingDraft(CARD, 800), PostingDraft(41, -800, "MAIN"))
+
+
+def test_refund_check():
+    assert codes(RefundEntry.check(RefundForm(None, D, None, None))) == [
+        ("V05", "original_txn_id"),
+        ("V05", "amount"),
+        ("V05", "payment_method_id"),
+    ]
+    assert codes(RefundEntry.check(RefundForm(1, D, -5, 2))) == [("V01", "amount")]
+
+
+def test_refund_form_has_no_account_or_currency_fields():
+    # 支出科目、商家、預算旗標從原交易帶入（U7）；不支援原幣（U12）
+    assert set(RefundForm.__dataclass_fields__) == {
+        "original_txn_id",
+        "txn_date",
+        "amount",
+        "payment_method_id",
+        "description",
+    }
