@@ -8,6 +8,8 @@ post() 的流程（P1 Step 3）：
 3. 寫入 transactions、postings（line_no 依草稿順序從 1 開始）→ flush 取得 id
    → audit.record(CREATE) → commit。任何例外都整批回滾。
 4. 回傳 PostResult(transaction_id, notices)。
+5. 寫入時撞到發票部分唯一索引（V08 的最後防線，P2 Step 2）→ 轉成 V08 ValidationFailed；
+   其他 IntegrityError 原樣拋出。post() 與 update() 共用，restore() 不變。
 
 Step 6 的生命週期（全部在同一個資料庫交易內：異動 + 稽核一起提交，任何錯誤整批回滾）：
 - update()：交易類型不能改（TXN_TYPE_IMMUTABLE）、已刪除的要先還原（TXN_DELETED）。
@@ -25,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import clock
@@ -39,6 +42,7 @@ from app.services.validation import (
     Issue,
     ValidationFailed,
     ValidationResult,
+    invoice_taken_issue,
     validate,
     validate_restore,
 )
@@ -54,6 +58,9 @@ class SessionNotClean(RuntimeError):
 class PostResult:
     transaction_id: int
     notices: tuple[Issue, ...]
+    # True：同一個送出權杖已經建立過交易，這次沒有寫入，transaction_id 是第一次建立的那筆
+    # （P2 Step 2，transactions.record_expense 的 submission_token）
+    replayed: bool = False
 
 
 def _ensure_clean(db: Session) -> None:
@@ -107,6 +114,24 @@ def _raise_for(result: ValidationResult, confirmed: Iterable[str]) -> None:
     pending = tuple(i for i in result.confirmations if i.code not in confirmed)
     if pending:
         raise ConfirmationRequired(result, pending)
+
+
+def _raise_if_invoice_taken(db: Session, draft: EntryDraft, exclude_txn_id: int | None) -> None:
+    """V08 最後防線：寫入時撞到發票部分唯一索引（例如兩個請求同時送出同一張發票）。
+
+    不解析例外訊息：rollback 之後直接查「這個發票號碼現在是否被其他未刪除交易占用」。
+    - 被占用 → 轉成 V08 ValidationFailed。
+    - 占用者是同一個送出權杖建立的（同一筆重送）→ 不轉換，交給 transactions 依權杖處理。
+    - 沒有被占用 → 不是發票衝突，呼叫端原樣拋出原本的 IntegrityError。
+    """
+    if draft.invoice_no is None:
+        return
+    owner = ledger_repo.active_invoice_owner(db, draft.invoice_no, exclude_txn_id)
+    if owner is None:
+        return
+    if draft.source_ref is not None and owner.source_ref == draft.source_ref:
+        return
+    raise ValidationFailed(ValidationResult(errors=(invoice_taken_issue(owner),)))
 
 
 def _new_postings(postings: tuple[PostingDraft, ...]) -> list[Posting]:
@@ -172,6 +197,10 @@ def post(
             user_id=user_id,
         )
         db.commit()
+    except IntegrityError:
+        db.rollback()
+        _raise_if_invoice_taken(db, draft, None)
+        raise
     except Exception:
         db.rollback()
         raise
@@ -223,6 +252,10 @@ def update(
             user_id=user_id,
         )
         db.commit()
+    except IntegrityError:
+        db.rollback()
+        _raise_if_invoice_taken(db, draft, txn_id)
+        raise
     except Exception:
         db.rollback()
         raise

@@ -8,7 +8,8 @@
 
 例外（規格 5.4）：帳平檢查要看全部交易（含已刪除與草稿），使用名稱明確寫著「全部」的
 all_transaction_sums() 與 all_postings_on_non_leaf_accounts()，不得用於餘額或報表。
-invoice_in_use() 只用於發票號碼唯一性（與資料庫部分唯一索引相同條件），不是帳務加總。
+active_invoice_owner()／invoice_in_use() 只用於發票號碼唯一性（與資料庫部分唯一索引相同條件），
+find_by_source_ref() 只用於送出權杖去重；兩者都不是帳務加總。
 """
 
 from collections.abc import Iterable
@@ -100,16 +101,59 @@ def earliest_active_refund_date(db: Session, original_id: int) -> str | None:
     return db.scalar(stmt)
 
 
-def invoice_in_use(db: Session, invoice_no: str, exclude_txn_id: int) -> bool:
-    """發票號碼是否已被其他未刪除的交易使用（與部分唯一索引的條件相同）。"""
-    stmt = select(
-        exists().where(
-            Transaction.invoice_no == invoice_no,
-            Transaction.deleted_at.is_(None),
-            Transaction.id != exclude_txn_id,
-        )
+def active_invoice_owner(
+    db: Session, invoice_no: str, exclude_txn_id: int | None = None
+) -> Transaction | None:
+    """占用這個發票號碼的未刪除交易（V08）。
+
+    條件與資料庫部分唯一索引 uq_transactions_invoice_no_active 完全相同
+    （deleted_at IS NULL；不看 status），全專案只在這裡寫一次。
+    """
+    stmt = select(Transaction).where(
+        Transaction.invoice_no == invoice_no, Transaction.deleted_at.is_(None)
     )
-    return bool(db.scalar(stmt))
+    if exclude_txn_id is not None:
+        stmt = stmt.where(Transaction.id != exclude_txn_id)
+    return db.scalars(stmt.order_by(Transaction.id).limit(1)).first()
+
+
+def invoice_in_use(db: Session, invoice_no: str, exclude_txn_id: int | None = None) -> bool:
+    """發票號碼是否已被其他未刪除的交易使用（與部分唯一索引的條件相同）。"""
+    return active_invoice_owner(db, invoice_no, exclude_txn_id) is not None
+
+
+def active_expense_main_exists(
+    db: Session,
+    txn_date: date,
+    merchant_id: int,
+    main_amount: int,
+    exclude_txn_id: int | None = None,
+) -> bool:
+    """V12：同一天、同商家、MAIN 金額相同的有效 EXPENSE 是否已存在。
+
+    從 active_postings() 開始，已刪除與草稿交易自然排除；修改時用 exclude_txn_id 排除自己。
+    """
+    stmt = active_postings().where(
+        Transaction.txn_type == TxnType.EXPENSE.value,
+        Transaction.txn_date == txn_date.isoformat(),
+        Transaction.merchant_id == merchant_id,
+        Posting.line_role == LineRole.MAIN.value,
+        Posting.amount == main_amount,
+    )
+    if exclude_txn_id is not None:
+        stmt = stmt.where(Transaction.id != exclude_txn_id)
+    return bool(db.scalar(select(stmt.exists())))
+
+
+def find_by_source_ref(db: Session, source: str, source_ref: str) -> Transaction | None:
+    """依 (source, source_ref) 找交易，包含已刪除與草稿（與 UNIQUE 約束的範圍相同）。
+
+    Web 一次性送出權杖用它判斷「這個權杖是否已經建立過交易」（P2 Step 2 決策 A）。
+    """
+    stmt = select(Transaction).where(
+        Transaction.source == source, Transaction.source_ref == source_ref
+    )
+    return db.scalar(stmt)
 
 
 def active_sum_for_class(

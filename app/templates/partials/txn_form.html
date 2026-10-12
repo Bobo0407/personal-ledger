@@ -1,5 +1,10 @@
 {# /txn/new 支出表單。GET 時嵌在 pages/txn_new.html；POST 的 200／422 回應直接回傳這個片段，換掉 #txn-area。 #}
-{% if saved %}
+{% if saved and saved.replayed %}
+{# 同一個送出權杖再次送出：沒有重複建立（規格 9.3） #}
+<div class="notice notice-ok" role="status" data-txn-id="{{ saved.transaction_id }}" data-replayed="true">
+  這筆已經儲存過，沒有重複建立。
+</div>
+{% elif saved %}
 <div class="notice notice-ok" role="status" data-txn-id="{{ saved.transaction_id }}">
   已儲存：
   {%- for label, accounts in account_groups %}{% for a in accounts %}{% if a.id == saved.account_id %}{{ a.name }} {% endif %}{% endfor %}{% endfor -%}
@@ -27,6 +32,7 @@
       hx-post="/txn/new" hx-target="#txn-area" hx-swap="innerHTML"
       hx-disabled-elt="#btn-next, #btn-home">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="submission_token" value="{{ values.submission_token }}">
 
   <label for="amount">金額</label>
   <input id="amount" name="amount" type="text" inputmode="numeric" autocomplete="off"
@@ -58,6 +64,15 @@
   </select>
   {% with name = "payment_method_id" %}{% include "partials/_field_errors.html" %}{% endwith %}
 
+  <label for="merchant_name">商家（選填）</label>
+  <input id="merchant_name" name="merchant_name" type="text" list="merchant-options" autocomplete="off"
+         value="{{ values.merchant_name }}"
+         {%- if field_errors.merchant_name %} aria-invalid="true" aria-describedby="merchant_name-error"{% endif %}>
+  <datalist id="merchant-options">
+    {% for name in merchant_names %}<option value="{{ name }}"></option>{% endfor %}
+  </datalist>
+  {% with name = "merchant_name" %}{% include "partials/_field_errors.html" %}{% endwith %}
+
   <label for="txn_date">日期</label>
   <input id="txn_date" name="txn_date" type="date" value="{{ values.txn_date }}"
          {%- if field_errors.txn_date %} aria-invalid="true" aria-describedby="txn_date-error"{% endif %}>
@@ -67,6 +82,28 @@
   <input id="description" name="description" type="text" autocomplete="off" value="{{ values.description }}"
          {%- if field_errors.description %} aria-invalid="true" aria-describedby="description-error"{% endif %}>
   {% with name = "description" %}{% include "partials/_field_errors.html" %}{% endwith %}
+
+  {# 憑證區塊（UF01：展開才填）。有值或有錯誤時預設展開。 #}
+  <details class="voucher"{% if values.voucher_type or values.invoice_no or field_errors.voucher_type or field_errors.invoice_no %} open{% endif %}>
+    <summary>憑證（選填）</summary>
+    <div class="stack">
+      <label for="voucher_type">憑證類型</label>
+      <select id="voucher_type" name="voucher_type"
+              {%- if field_errors.voucher_type %} aria-invalid="true" aria-describedby="voucher_type-error"{% endif %}>
+        <option value="">未指定</option>
+        {% for value, label in voucher_choices %}
+        <option value="{{ value }}"{% if values.voucher_type == value %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      {% with name = "voucher_type" %}{% include "partials/_field_errors.html" %}{% endwith %}
+
+      <label for="invoice_no">發票號碼</label>
+      <input id="invoice_no" name="invoice_no" type="text" autocomplete="off" autocapitalize="characters"
+             spellcheck="false" placeholder="AB12345678" value="{{ values.invoice_no }}"
+             {%- if field_errors.invoice_no %} aria-invalid="true" aria-describedby="invoice_no-error"{% endif %}>
+      {% with name = "invoice_no" %}{% include "partials/_field_errors.html" %}{% endwith %}
+    </div>
+  </details>
 
   <div class="actions">
     <button id="btn-next" type="submit" name="action" value="next">儲存並記下一筆</button>

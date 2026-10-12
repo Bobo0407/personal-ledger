@@ -16,7 +16,7 @@ from app.config import Settings
 from app.db import get_db, make_sessionmaker
 from app.logging_config import APP_LOGGER, LOG_FILE_NAME
 from app.main import create_app
-from app.models import AuditLog, PaymentMethod, Setting, Transaction, User
+from app.models import AuditLog, Merchant, PaymentMethod, Setting, Transaction, User
 from app.services import accounts as account_service
 from app.services.master_data_seed import seed_master_data
 from tests.conftest import TEST_CHART
@@ -24,6 +24,7 @@ from tests.ledger_helpers import TODAY, acc, freeze_today, post_manual
 
 PASSWORD = "correct-password"
 CSRF_INPUT = re.compile(r'name="csrf_token" value="([^"]+)"')
+TOKEN_INPUT = re.compile(r'name="submission_token" value="([^"]+)"')
 HX = {"HX-Request": "true"}
 
 
@@ -111,10 +112,19 @@ def only_txn(session_factory) -> Transaction:
         return txn
 
 
+def fresh_tokens(client: TestClient) -> tuple[str, str]:
+    """(csrf_token, submission_token)：從新開的 /txn/new 頁面取得。"""
+    html = client.get("/txn/new").text
+    return CSRF_INPUT.search(html).group(1), TOKEN_INPUT.search(html).group(1)
+
+
 def submit(client, db, *, htmx=True, **overrides):
-    """以預設值（今天、正餐 120、LINE Pay）送出表單；overrides 可以覆寫或加欄位。"""
+    """以預設值（今天、正餐 120、LINE Pay）送出表單；overrides 可以覆寫或加欄位。
+    每次都從新開的頁面取得權杖，也就是「每次都是一份新的表單」。"""
+    csrf, token = fresh_tokens(client)
     data = {
-        "csrf_token": csrf_from(client, "/txn/new"),
+        "csrf_token": csrf,
+        "submission_token": token,
         "txn_date": TODAY.isoformat(),
         "amount": "120",
         "account_id": str(acc(db, "5101")),
@@ -273,18 +283,16 @@ def test_audit_log_records_logged_in_user(client, db, session_factory):
     assert [(log.action, log.user_id) for log in logs] == [("CREATE", user_id(db))]
 
 
-def test_fields_outside_step1_are_not_saved(client, db, session_factory):
+def test_fields_outside_the_form_are_not_saved(client, db, session_factory):
     submit(
         client,
         db,
         fee_amount=30,
         fee_account_id=acc(db, "5501"),
-        invoice_no="AB12345678",
         exclude_from_budget="1",
     )
     txn = only_txn(session_factory)
     assert len(txn.postings) == 2
-    assert txn.invoice_no is None
     assert txn.exclude_from_budget is False
 
 
@@ -473,3 +481,223 @@ def test_system_error_returns_htmx_fragment_without_details(client, db, session_
     assert "unhandled error POST /txn/new" in log
     assert "4567" not in log
     assert "秘密備註" not in log
+
+
+# === P2 Step 2：商家、V12、憑證／發票、一次性送出權杖 ======================================
+
+
+def merchants_in_db(session_factory) -> list[tuple[int, str]]:
+    with session_factory() as s:
+        return [(m.id, m.name) for m in s.scalars(select(Merchant).order_by(Merchant.id))]
+
+
+def test_merchant_created_then_reused(client, db, session_factory):
+    assert submit(client, db, merchant_name="7-11").status_code == 200
+    assert submit(client, db, merchant_name=" ７－１１ ", amount=60).status_code == 200
+    assert merchants_in_db(session_factory) == [(1, "7-11")]
+    with session_factory() as s:
+        assert [t.merchant_id for t in s.scalars(select(Transaction))] == [1, 1]
+    html = client.get("/txn/new").text
+    assert '<datalist id="merchant-options">' in html
+    assert '<option value="7-11"></option>' in html
+
+
+def test_blank_merchant_saves_without_merchant(client, db, session_factory):
+    submit(client, db, merchant_name="   ")
+    assert only_txn(session_factory).merchant_id is None
+    assert merchants_in_db(session_factory) == []
+
+
+def test_inactive_merchant_error_shows_on_merchant_field(client, db, session_factory):
+    db.add(Merchant(name="舊店", is_active=False))
+    db.commit()
+    resp = submit(client, db, merchant_name="舊店")
+    assert resp.status_code == 422
+    assert field_error_codes(resp.text, "merchant_name") == ["V04"]
+    assert input_value(resp.text, "merchant_name") == "舊店"
+    assert txn_count(session_factory) == 0
+
+
+def test_new_merchant_stays_when_entry_is_rejected(client, db, session_factory):
+    """決策 M2 的已知取捨：商家先 commit，交易被擋下時留下沒有交易引用的商家。"""
+    resp = submit(client, db, merchant_name="新店", amount="")
+    assert resp.status_code == 422
+    assert txn_count(session_factory) == 0
+    assert merchants_in_db(session_factory) == [(1, "新店")]
+
+
+def test_v12_web_confirmation(client, db, session_factory):
+    submit(client, db, merchant_name="7-11", amount=85)
+    resp = submit(client, db, merchant_name="7-11", amount=85)
+    assert resp.status_code == 409
+    assert confirm_codes(resp.text) == ["V12"]
+    assert "今天已經有一筆 7-11 85 元，是重複嗎？" in resp.text
+    assert hidden(resp.text, "merchant_name") == "7-11"
+    assert txn_count(session_factory) == 1
+
+    resp = submit(client, db, merchant_name="7-11", amount=85, confirmed="V12")
+    assert resp.status_code == 200
+    assert txn_count(session_factory) == 2
+
+
+def test_v12_web_ignores_deleted_original(client, db, session_factory):
+    from app.services import transactions as txn_service
+
+    submit(client, db, merchant_name="7-11", amount=85)
+    txn_service.delete_transaction(db, only_txn(session_factory).id)
+    assert submit(client, db, merchant_name="7-11", amount=85).status_code == 200
+
+
+@pytest.mark.parametrize("raw", ["ab12345678", "AB-12345678", " ab-12345678 "])
+def test_invoice_normalized_and_saved(client, db, session_factory, raw):
+    resp = submit(client, db, voucher_type="EINVOICE", invoice_no=raw)
+    assert resp.status_code == 200
+    txn = only_txn(session_factory)
+    assert (txn.voucher_type, txn.invoice_no) == ("EINVOICE", "AB12345678")
+
+
+def test_invoice_format_error_on_field(client, db, session_factory):
+    resp = submit(client, db, invoice_no="AB-1234")
+    assert resp.status_code == 422
+    assert field_error_codes(resp.text, "invoice_no") == ["V08"]
+    assert '<details class="voucher" open>' in resp.text
+    assert input_value(resp.text, "invoice_no") == "AB-1234"
+    assert txn_count(session_factory) == 0
+
+
+def test_invoice_duplicate_on_field(client, db, session_factory):
+    submit(client, db, invoice_no="AB12345678")
+    resp = submit(client, db, invoice_no="ab-12345678", amount=99)
+    assert resp.status_code == 422
+    assert field_error_codes(resp.text, "invoice_no") == ["V08"]
+    assert f"這張發票已記在 {TODAY.month}/{TODAY.day} 的交易" in resp.text
+    assert txn_count(session_factory) == 1
+
+
+def test_unknown_voucher_type_is_web_field_error(client, db, session_factory):
+    resp = submit(client, db, voucher_type="PHOTO")
+    assert resp.status_code == 422
+    assert field_error_codes(resp.text, "voucher_type") == [None]
+    assert txn_count(session_factory) == 0
+
+
+def test_save_and_next_clears_merchant_and_voucher(client, db):
+    html = submit(
+        client, db, merchant_name="7-11", voucher_type="EINVOICE", invoice_no="AB12345678"
+    ).text
+    assert input_value(html, "merchant_name") == ""
+    assert input_value(html, "invoice_no") == ""
+    assert selected_value(html, "voucher_type") is None
+    assert '<details class="voucher">' in html
+
+
+def test_post_without_token_is_422_and_gets_new_token(client, db, session_factory):
+    resp = submit(client, db, submission_token="")
+    assert resp.status_code == 422
+    assert "表單已失效，請重新整理後再試。" in resp.text
+    assert banner_codes(resp.text) == []
+    assert TOKEN_INPUT.search(resp.text).group(1) != ""
+    assert txn_count(session_factory) == 0
+
+
+def test_page_has_submission_token(client):
+    first = TOKEN_INPUT.search(client.get("/txn/new").text).group(1)
+    second = TOKEN_INPUT.search(client.get("/txn/new").text).group(1)
+    assert len(first) >= 16
+    assert first != second
+
+
+def test_same_token_twice_creates_one_transaction(client, db, session_factory):
+    csrf, token = fresh_tokens(client)
+    data = {
+        "csrf_token": csrf,
+        "submission_token": token,
+        "txn_date": TODAY.isoformat(),
+        "amount": "120",
+        "account_id": str(acc(db, "5101")),
+        "payment_method_id": str(pm_id(db, "LINE Pay")),
+        "action": "next",
+    }
+    first = client.post("/txn/new", data=data, headers=HX)
+    second = client.post("/txn/new", data=data, headers=HX)
+    assert first.status_code == second.status_code == 200
+    assert 'data-replayed="true"' in second.text
+    assert "這筆已經儲存過，沒有重複建立。" in second.text
+    txn = only_txn(session_factory)
+    assert f'data-txn-id="{txn.id}"' in second.text
+    with session_factory() as s:
+        logs = s.scalars(select(AuditLog)).all()
+    assert [(log.entity_id, log.user_id) for log in logs] == [(txn.id, user_id(db))]
+    # 回應帶著新的權杖，下一筆可以照常儲存
+    assert TOKEN_INPUT.search(second.text).group(1) != token
+
+
+def test_same_token_replay_with_save_and_home(client, db, session_factory):
+    csrf, token = fresh_tokens(client)
+    data = {
+        "csrf_token": csrf,
+        "submission_token": token,
+        "txn_date": TODAY.isoformat(),
+        "amount": "120",
+        "account_id": str(acc(db, "5101")),
+        "payment_method_id": str(pm_id(db, "LINE Pay")),
+        "action": "home",
+    }
+    client.post("/txn/new", data=data, headers=HX)
+    resp = client.post("/txn/new", data=data, headers=HX)
+    assert resp.headers["HX-Redirect"] == "/"
+    assert txn_count(session_factory) == 1
+
+
+def test_token_survives_422_409_and_edit(client, db):
+    csrf, token = fresh_tokens(client)
+    base = {
+        "csrf_token": csrf,
+        "submission_token": token,
+        "txn_date": TODAY.isoformat(),
+        "account_id": str(acc(db, "5101")),
+        "payment_method_id": str(pm_id(db, "LINE Pay")),
+    }
+    resp = client.post("/txn/new", data={**base, "amount": "abc"}, headers=HX)
+    assert TOKEN_INPUT.search(resp.text).group(1) == token
+    resp = client.post("/txn/new", data={**base, "amount": "0"}, headers=HX)
+    assert TOKEN_INPUT.search(resp.text).group(1) == token
+    resp = client.post("/txn/new", data={**base, "amount": "12000"}, headers=HX)
+    assert resp.status_code == 409
+    assert hidden(resp.text, "submission_token") == token
+    resp = client.post("/txn/new", data={**base, "amount": "12000", "action": "edit"}, headers=HX)
+    assert TOKEN_INPUT.search(resp.text).group(1) == token
+    resp = client.post("/txn/new", data={**base, "amount": "12000", "confirmed": "V10"}, headers=HX)
+    assert resp.status_code == 200
+    assert "已儲存" in resp.text
+
+
+def test_replay_with_new_merchant_name_has_no_side_effects(client, db, session_factory):
+    """已用過的權杖重送時換成全新的商家名稱：直接回傳第一次的交易，
+    不建立商家、不新增交易、不新增稽核紀錄。"""
+    csrf, token = fresh_tokens(client)
+    data = {
+        "csrf_token": csrf,
+        "submission_token": token,
+        "txn_date": TODAY.isoformat(),
+        "amount": "85",
+        "account_id": str(acc(db, "5101")),
+        "payment_method_id": str(pm_id(db, "LINE Pay")),
+        "merchant_name": "7-11",
+        "action": "next",
+    }
+    first = client.post("/txn/new", data=data, headers=HX)
+    assert first.status_code == 200
+    txn = only_txn(session_factory)
+    assert merchants_in_db(session_factory) == [(1, "7-11")]
+
+    second = client.post(
+        "/txn/new", data={**data, "merchant_name": "一個全新的不存在商家"}, headers=HX
+    )
+    assert second.status_code == 200
+    assert 'data-replayed="true"' in second.text
+    assert f'data-txn-id="{txn.id}"' in second.text
+    assert txn_count(session_factory) == 1
+    with session_factory() as s:
+        assert s.scalar(select(func.count()).select_from(AuditLog)) == 1
+    assert merchants_in_db(session_factory) == [(1, "7-11")]

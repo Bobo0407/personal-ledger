@@ -4,13 +4,23 @@
   這裡只再篩出啟用中的 EXPENSE 科目，並依上層科目分組給 <optgroup> 使用。
 - 付款方式：啟用中的付款方式；預設值取 payment_methods.get_default()（D4、P11），
   預設付款方式已停用時不預選。
+- 商家（P2 Step 2）：啟用中的商家名稱，給原生 <datalist> 使用。
+- 憑證類型（P2 Step 2）：VoucherType 的值與畫面標籤。
 """
 
 from sqlalchemy.orm import Session
 
 from app.models import Account, PaymentMethod
-from app.models.enums import AccountClass
-from app.services import accounts, payment_methods
+from app.models.enums import AccountClass, VoucherType
+from app.services import accounts, merchants, payment_methods
+
+# 憑證類型（規格 F18、6.6）的畫面標籤；值本身由 VoucherType 定義
+VOUCHER_LABELS = {
+    VoucherType.EINVOICE: "載具電子發票",
+    VoucherType.PAPER_INVOICE: "紙本發票",
+    VoucherType.RECEIPT: "收據",
+    VoucherType.NONE: "無憑證",
+}
 
 
 def expense_account_groups(db: Session) -> list[tuple[str | None, list[Account]]]:
@@ -35,3 +45,13 @@ def payment_method_choices(db: Session) -> tuple[list[PaymentMethod], int | None
     default = payment_methods.get_default(db)
     default_id = default.id if default is not None and default.is_active else None
     return methods, default_id
+
+
+def voucher_choices() -> list[tuple[str, str]]:
+    """[(值, 畫面標籤), ...]，依 VoucherType 定義順序。"""
+    return [(v.value, VOUCHER_LABELS[v]) for v in VoucherType]
+
+
+def merchant_names(db: Session) -> list[str]:
+    """商家欄位 <datalist> 用：啟用中的商家名稱。"""
+    return merchants.active_names(db)

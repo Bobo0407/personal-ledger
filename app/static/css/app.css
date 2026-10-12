@@ -62,3 +62,6 @@ button:disabled { opacity: 0.6; cursor: wait; }
 .notice-warn { background: var(--warn-bg); color: var(--warn-fg); }
 .confirm { padding: 1rem; border: 1px solid var(--border); border-radius: 0.5rem; }
 .confirm h2 { margin-top: 0; font-size: 1.125rem; }
+.voucher { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.5rem 0.75rem; }
+.voucher summary { cursor: pointer; padding: 0.25rem 0; }
+.voucher[open] summary { margin-bottom: 0.5rem; }

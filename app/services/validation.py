@@ -17,6 +17,11 @@ notices（儲存後提示）。
 - V10（確認）：交易金額 = 所有正數分錄加總，「大於」settings.large_amount_threshold 才確認。
   設定不存在時用規格預設 10,000；設定存在但不是正整數時丟 InvalidSetting，不靜默改用預設值。
 - V11（確認）：交易日期晚於今天（台北日期）。
+- V12（確認，P2 Step 2）：同一天、同商家、MAIN 金額相同的有效 EXPENSE 已經有一筆。
+  只比對 EXPENSE；金額只看 MAIN（手續費、利息不影響）；從 active_postings() 查，
+  已刪除與草稿不算；修改時排除自己，且只在日期、商家或 MAIN 金額改變時重問（同 U3）。
+- V08（P2 Step 2）：發票號碼格式為 2 個大寫英文字母 + 8 位數字，且不能被其他未刪除的交易使用。
+  新增與修改共用；修改時排除自己。還原時的 V08 見 validate_restore()。
 - V13（提醒）：CASH／BANK 帳戶「截至今天」的餘額因為這筆交易而變少，且結果 < 0。
   未來日期的交易不影響今天的餘額，所以不會觸發。
 - TXN_STRUCTURE（Step 4、5）：依 txn_type 檢查分錄結構，是 builder 之外的第二道防線，
@@ -73,6 +78,7 @@ from app.services.txn_structure import check_structure
 LARGE_AMOUNT_SETTING = "large_amount_threshold"
 DEFAULT_LARGE_AMOUNT_THRESHOLD = 10_000  # 規格 6.10 的初始值；只在 settings 完全沒有這筆時使用
 POSITIVE_INT = re.compile(r"[1-9][0-9]*")
+INVOICE_NO = re.compile(r"[A-Z]{2}[0-9]{8}")  # 與資料庫 CHECK（GLOB）相同
 
 # V10 不套用的交易類型：金額本來就經常超過門檻，「多打一個 0」的確認只會變成固定噪音（R4）
 V10_EXEMPT = frozenset({TxnType.OPENING, TxnType.PAYROLL})
@@ -236,6 +242,27 @@ def _check_header(
             out.errors.append(Issue("V05", "找不到商家", field="merchant_id"))
         elif merchant_changed and not merchant.is_active:
             out.errors.append(Issue("V04", f"「{merchant.name}」已停用", field="merchant_id"))
+    _check_invoice(db, draft, out, existing.id if existing is not None else None)
+
+
+def invoice_taken_issue(owner: Transaction) -> Issue:
+    """V08：發票號碼已被其他未刪除的交易使用。新增、修改與 LedgerService 的最後防線共用。"""
+    day = date.fromisoformat(owner.txn_date)
+    return Issue("V08", f"這張發票已記在 {day.month}/{day.day} 的交易", field="invoice_no")
+
+
+def _check_invoice(
+    db: Session, draft: EntryDraft, out: _Collector, exclude_txn_id: int | None
+) -> None:
+    if draft.invoice_no is None:
+        return
+    if not isinstance(draft.invoice_no, str) or not INVOICE_NO.fullmatch(draft.invoice_no):
+        message = "發票號碼格式為 2 個英文字母加 8 位數字，例如 AB12345678"
+        out.errors.append(Issue("V08", message, field="invoice_no"))
+        return
+    owner = ledger_repo.active_invoice_owner(db, draft.invoice_no, exclude_txn_id)
+    if owner is not None:
+        out.errors.append(invoice_taken_issue(owner))
 
 
 def _check_postings(
@@ -378,6 +405,41 @@ def _check_confirmations(
     date_changed = existing is None or draft.txn_date != existing.txn_date
     if days > 0 and date_changed:
         out.confirmations.append(Issue("V11", f"日期是 {days} 天後，確定嗎？"))
+    _check_duplicate_expense(db, draft, out, existing)
+
+
+def _check_duplicate_expense(
+    db: Session, draft: EntryDraft, out: _Collector, existing: ExistingTransaction | None
+) -> None:
+    """V12：同一天、同商家、MAIN 金額相同的有效 EXPENSE。"""
+    if draft.txn_type != TxnType.EXPENSE or draft.merchant_id is None:
+        return
+    main = main_posting(draft.postings)
+    if main is None:
+        return
+    if existing is not None:
+        old_main = main_posting(existing.postings)
+        unchanged = (
+            draft.txn_date == existing.txn_date
+            and draft.merchant_id == existing.merchant_id
+            and old_main is not None
+            and main.amount == old_main.amount
+        )
+        if unchanged:
+            return
+    exclude_id = existing.id if existing is not None else None
+    if not ledger_repo.active_expense_main_exists(
+        db, draft.txn_date, draft.merchant_id, main.amount, exclude_id
+    ):
+        return
+    merchant = db.get(Merchant, draft.merchant_id)
+    name = merchant.name if merchant is not None else "這個商家"
+    day = (
+        "今天"
+        if draft.txn_date == clock.today()
+        else f"{draft.txn_date.month}/{draft.txn_date.day}"
+    )
+    out.confirmations.append(Issue("V12", f"{day}已經有一筆 {name} {main.amount:,} 元，是重複嗎？"))
 
 
 def _magnitude(postings: tuple[PostingDraft, ...]) -> int:

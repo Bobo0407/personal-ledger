@@ -12,12 +12,15 @@ P2 的 router 只呼叫這裡的 record_*／update_transaction／delete_transact
 """
 
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import PaymentMethod, Transaction
-from app.models.enums import AccountSubtype, SystemAccountKey, TxnType
+from app.models.enums import AccountSubtype, SystemAccountKey, TxnSource, TxnType
 from app.repositories import accounts as account_repo
+from app.repositories import ledger as ledger_repo
 from app.services import ledger
 from app.services.accounts import system_account
 from app.services.drafts import EntryDraft
@@ -148,10 +151,59 @@ def _draft_refund(db: Session, form: RefundForm) -> EntryDraft:
 # --- 新增 -------------------------------------------------------------------------
 
 
+SUBMISSION_PREFIX = "submit:"
+
+
+def submission_ref(token: str) -> str:
+    """Web 一次性送出權杖 → transactions.source_ref（source = MANUAL；P2 Step 2 決策 A）。"""
+    return f"{SUBMISSION_PREFIX}{token}"
+
+
+def _replayed(db: Session, source_ref: str) -> PostResult | None:
+    txn = ledger_repo.find_by_source_ref(db, TxnSource.MANUAL.value, source_ref)
+    return PostResult(txn.id, (), replayed=True) if txn is not None else None
+
+
+def find_replay(db: Session, submission_token: str) -> PostResult | None:
+    """這個送出權杖是否已經建立過交易；是的話回傳 replayed 結果，否則 None。
+
+    只讀不寫。Web 在處理任何會寫入的前置步驟（例如建立商家）之前先呼叫，
+    避免已用過的權杖重送時產生副作用。record_expense() 內仍會再檢查一次，
+    那才是權威檢查（搭配 UNIQUE(source, source_ref) 處理同時送出）。
+    """
+    return _replayed(db, submission_ref(submission_token))
+
+
 def record_expense(
-    db: Session, form: ExpenseForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
+    db: Session,
+    form: ExpenseForm,
+    *,
+    confirmed: Iterable[str] = (),
+    user_id: int | None = None,
+    submission_token: str | None = None,
 ) -> PostResult:
-    return ledger.post(db, _draft_expense(db, form), confirmed=confirmed, user_id=user_id)
+    """submission_token（Web 表單的一次性權杖，規格 9.3「重複送出」）：
+    - 這個權杖已經建立過交易（含之後被軟刪除的）→ 不驗證、不寫入、不寫稽核，
+      回傳第一次建立的 transaction_id（replayed=True）。
+    - 否則以 source_ref = "submit:<token>" 寫入；兩個請求同時送出時，
+      後到的會撞到 UNIQUE(source, source_ref)，rollback 後改回傳先寫入的那筆。
+    """
+    if submission_token is None:
+        return ledger.post(db, _draft_expense(db, form), confirmed=confirmed, user_id=user_id)
+
+    ref = submission_ref(submission_token)
+    replay = _replayed(db, ref)
+    if replay is not None:
+        return replay
+    draft = replace(_draft_expense(db, form), source_ref=ref)
+    try:
+        return ledger.post(db, draft, confirmed=confirmed, user_id=user_id)
+    except IntegrityError:
+        # ledger.post 已經 rollback；確認是不是同一個權杖已經被寫入，是的話視為重送
+        replay = _replayed(db, ref)
+        if replay is None:
+            raise
+        return replay
 
 
 def record_income(
