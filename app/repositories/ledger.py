@@ -10,16 +10,20 @@
 all_transaction_sums() 與 all_postings_on_non_leaf_accounts()，不得用於餘額或報表。
 active_invoice_owner()／invoice_in_use() 只用於發票號碼唯一性（與資料庫部分唯一索引相同條件），
 find_by_source_ref() 只用於送出權杖去重；兩者都不是帳務加總。
+
+交易列表與搜尋（P2 Step 3）：先從 active_postings() 依交易分組成「一筆交易一列」的子查詢
+（_active_transactions()），之後的篩選、筆數、分頁、合計都建立在它之上，
+不會因為 postings 的 join 而重複計算交易，也不另外撰寫排除條件。
 """
 
 from collections.abc import Iterable
 from datetime import date
 
-from sqlalchemy import Select, exists, func, select
+from sqlalchemy import Select, Subquery, case, exists, func, select
 from sqlalchemy.orm import Session
 
-from app.models import Account, Posting, Transaction
-from app.models.enums import LineRole, TxnStatus, TxnType
+from app.models import Account, Merchant, Posting, Transaction
+from app.models.enums import AccountClass, LineRole, TxnStatus, TxnType
 
 
 def active_postings() -> Select:
@@ -198,3 +202,86 @@ def all_postings_on_non_leaf_accounts(db: Session) -> list[tuple[int, int, int]]
         .order_by(Posting.transaction_id, Posting.id)
     )
     return [tuple(row) for row in db.execute(stmt)]
+
+
+# --- 交易列表與搜尋（P2 Step 3）-----------------------------------------------------------
+
+
+def _active_transactions() -> Subquery:
+    """有效交易，一筆交易一列：(transaction_id, magnitude)。
+
+    magnitude = 該交易所有正數分錄的加總（交易規模，P2 Step 3）；
+    與 validation.transaction_magnitude()（V10 用的 Python 版本）是同一個定義。
+    從 active_postings() 分組而來，所以已刪除與草稿交易不會出現。
+    """
+    positive = case((Posting.amount > 0, Posting.amount), else_=0)
+    return (
+        active_postings()
+        .with_only_columns(
+            Posting.transaction_id.label("transaction_id"),
+            func.sum(positive).label("magnitude"),
+        )
+        .group_by(Posting.transaction_id)
+        .subquery("active_txn")
+    )
+
+
+def _filtered_transactions(
+    *,
+    date_from: date | None,
+    date_to: date | None,
+    merchant_id: int | None,
+    min_amount: int | None,
+    max_amount: int | None,
+) -> Subquery:
+    """依搜尋條件篩選後的有效交易，一筆交易一列：(transaction_id, magnitude)。"""
+    active = _active_transactions()
+    stmt = select(active.c.transaction_id, active.c.magnitude).join(
+        Transaction, Transaction.id == active.c.transaction_id
+    )
+    stmt = _date_range(stmt, date_from, date_to)
+    if merchant_id is not None:
+        stmt = stmt.where(Transaction.merchant_id == merchant_id)
+    if min_amount is not None:
+        stmt = stmt.where(active.c.magnitude >= min_amount)
+    if max_amount is not None:
+        stmt = stmt.where(active.c.magnitude <= max_amount)
+    return stmt.subquery("filtered_txn")
+
+
+def search_active_transactions(
+    db: Session, *, limit: int, offset: int, **filters
+) -> list[tuple[Transaction, str | None, int]]:
+    """[(交易, 商家名稱或 None, magnitude)]，依 txn_date DESC, id DESC 排序後分頁。"""
+    found = _filtered_transactions(**filters)
+    stmt = (
+        select(Transaction, Merchant.name, found.c.magnitude)
+        .join(found, found.c.transaction_id == Transaction.id)
+        .outerjoin(Merchant, Merchant.id == Transaction.merchant_id)
+        .order_by(Transaction.txn_date.desc(), Transaction.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return [(txn, name, magnitude) for txn, name, magnitude in db.execute(stmt).all()]
+
+
+def count_active_transactions(db: Session, **filters) -> int:
+    """符合條件的交易筆數（以交易計，不是分錄筆數）。"""
+    found = _filtered_transactions(**filters)
+    return int(db.scalar(select(func.count()).select_from(found)) or 0)
+
+
+def active_class_sums_for_search(db: Session, **filters) -> dict[str, int]:
+    """符合條件的交易中，EXPENSE、INCOME 科目分錄各自的原始加總（借正貸負，不翻號）。"""
+    found = _filtered_transactions(**filters)
+    stmt = (
+        active_postings()
+        .join(Account, Account.id == Posting.account_id)
+        .where(
+            Posting.transaction_id.in_(select(found.c.transaction_id)),
+            Account.account_class.in_([AccountClass.EXPENSE.value, AccountClass.INCOME.value]),
+        )
+        .with_only_columns(Account.account_class, func.sum(Posting.amount))
+        .group_by(Account.account_class)
+    )
+    return {account_class: int(total) for account_class, total in db.execute(stmt).all()}

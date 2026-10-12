@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}交易｜記帳{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>交易</h1>
+  <a href="/txn/new">記一筆</a>
+</div>
+<div id="txn-list">
+  {% include "partials/txn_list_body.html" %}
+</div>
+{% endblock %}

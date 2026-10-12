@@ -1,4 +1,6 @@
-"""/txn/new 快速記帳（P2 Step 1：只支援 EXPENSE；規格 7.3、7.4、UF01、UF02、F15、F16）。
+"""/txn 交易列表與搜尋、/txn/new 快速記帳。
+
+/txn/new（P2 Step 1：只支援 EXPENSE；規格 7.3、7.4、UF01、UF02、F15、F16）。
 
 Router 只做：驗證登入、解析表單型態、呼叫 transactions.record_expense()、依結果選擇回應。
 借貸、驗證規則、寫入全部在 P1 的 transactions／validation／LedgerService。
@@ -9,6 +11,12 @@ POST 只支援 HTMX（V1 不要求無 JS 版本），回應一律是 partials/ �
 - 422：表單解析失敗（Web 欄位錯誤）或 P1 ValidationFailed（規格 9.3）
 - 409：P1 ConfirmationRequired，回傳確認畫面；按「仍要儲存」帶 confirmed 重送（規格 9.3、T19）
 
+P2 Step 3：GET /txn 交易列表與搜尋（F22、F23、UF10）
+- 條件放在 query string（可書籤、重新整理保留）；完全沒帶條件時預設本月。
+- 條件欄位出現但是空白，代表不限（例如清空日期 = 不限日期）。
+- HTMX 請求只回傳 partials/txn_list_body.html（篩選表單 + 結果），換掉 #txn-list。
+- 條件不合理回 422；搜尋只讀，不建立商家。
+
 P2 Step 2：
 - 商家：輸入名稱，services/merchants.resolve_or_create() 換成 merchant_id（決策 M2）。
 - 憑證類型、發票號碼：V08 由 P1 validation 判斷。
@@ -18,6 +26,7 @@ P2 Step 2：
 
 import secrets
 from typing import Annotated
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, Request
 from sqlalchemy.orm import Session
@@ -27,8 +36,9 @@ from app import clock
 from app.db import get_db
 from app.deps import require_user
 from app.models import User
+from app.schemas.search import parse_page, parse_search
 from app.schemas.txn import FormParseError, parse_expense
-from app.services import entry_options, merchants, transactions
+from app.services import entry_options, merchants, search, transactions
 from app.services.issues import Issue
 from app.services.validation import ConfirmationRequired, ValidationFailed
 from app.templating import render
@@ -262,3 +272,59 @@ def create_txn(
             "notices": result.notices,  # V13 等「提醒」：已經儲存，只顯示不阻擋
         }
     return _form(request, db, next_values, saved=saved)
+
+
+# --- GET /txn 交易列表與搜尋（P2 Step 3）---------------------------------------------------
+
+SEARCH_FIELDS = ("date_from", "date_to", "merchant", "min_amount", "max_amount")
+ADVANCED_SEARCH_FIELDS = ("merchant", "min_amount", "max_amount")
+
+
+def _is_htmx(request: Request) -> bool:
+    return request.headers.get("hx-request") == "true"
+
+
+def _page_url(values: dict[str, str], page: int) -> str:
+    """換頁連結：保留目前的條件（包含空白值，空白代表不限）。"""
+    return "/txn?" + urlencode({**values, "page": page})
+
+
+@router.get("/txn")
+def list_txns(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_user)],
+) -> Response:
+    params = request.query_params
+    is_default = not any(key in params for key in SEARCH_FIELDS)
+    values = {key: params.get(key, "") for key in SEARCH_FIELDS}
+    if is_default:
+        first, last = search.month_range(clock.today())
+        values["date_from"], values["date_to"] = first.isoformat(), last.isoformat()
+
+    template = "partials/txn_list_body.html" if _is_htmx(request) else "pages/txn_list.html"
+    context = {
+        "values": values,
+        "field_errors": {},
+        "advanced_open": any(values[key] for key in ADVANCED_SEARCH_FIELDS),
+        "merchant_names": entry_options.merchant_names(db),
+        "is_default": is_default,
+        "result": None,
+        "today": clock.today(),
+    }
+    try:
+        query = parse_search(values)
+    except FormParseError as exc:
+        context["field_errors"] = {f: [(None, msg)] for f, msg in exc.errors.items()}
+        context["advanced_open"] = context["advanced_open"] or any(
+            f in exc.errors for f in ADVANCED_SEARCH_FIELDS
+        )
+        return render(request, template, context, status_code=422)
+
+    result = search.search(db, query.to_filters(), page=parse_page(params.get("page")))
+    context["result"] = result
+    context["prev_url"] = _page_url(values, result.page - 1) if result.page > 1 else None
+    context["next_url"] = (
+        _page_url(values, result.page + 1) if result.page < result.page_count else None
+    )
+    return render(request, template, context)

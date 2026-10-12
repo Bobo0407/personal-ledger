@@ -65,3 +65,24 @@ button:disabled { opacity: 0.6; cursor: wait; }
 .voucher { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.5rem 0.75rem; }
 .voucher summary { cursor: pointer; padding: 0.25rem 0; }
 .voucher[open] summary { margin-bottom: 0.5rem; }
+
+/* P2 Step 3 交易列表 */
+.page-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+.page-head a, .pager a, .empty a { color: var(--accent); }
+.muted { color: var(--muted); }
+.date-range { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+.date-range > * { min-width: 0; }
+.date-range input { min-width: 0; }
+.htmx-indicator { margin: 0.5rem 0; }
+#txn-list.htmx-request .txn-results { opacity: 0.5; }
+.txn-summary { margin: 1rem 0 0.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.txn-rows { list-style: none; margin: 0; padding: 0; }
+.txn-row { padding: 0.625rem 0; border-bottom: 1px solid var(--border); min-width: 0; }
+.txn-line { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.txn-date { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.badge { flex: none; font-size: 0.75rem; padding: 0.125rem 0.5rem; border: 1px solid var(--border); border-radius: 999px; white-space: nowrap; }
+.txn-amount { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.txn-text { margin-top: 0.125rem; font-size: 0.875rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.txn-merchant { color: var(--fg); }
+.pager { display: flex; justify-content: space-between; align-items: center; margin: 1rem 0; }
+.empty { color: var(--muted); margin: 1rem 0; }

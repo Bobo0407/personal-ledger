@@ -1,0 +1,100 @@
+{# /txn 篩選表單 + 結果。整頁時嵌在 pages/txn_list.html；HTMX 請求（搜尋、換頁）只回傳這個片段，換掉 #txn-list。
+   金額與合計都由 services/search.py 算好，這裡只負責顯示。 #}
+<div id="txn-status" aria-live="polite"></div>
+
+<form method="get" action="/txn" class="stack search-form"
+      hx-get="/txn" hx-target="#txn-list" hx-swap="innerHTML" hx-push-url="true"
+      hx-indicator="#txn-loading" hx-disabled-elt="#btn-search">
+  <div class="date-range">
+    <div class="stack">
+      <label for="date_from">開始日期</label>
+      <input id="date_from" name="date_from" type="date" value="{{ values.date_from }}"
+             {%- if field_errors.date_from %} aria-invalid="true" aria-describedby="date_from-error"{% endif %}>
+      {% with name = "date_from" %}{% include "partials/_field_errors.html" %}{% endwith %}
+    </div>
+    <div class="stack">
+      <label for="date_to">結束日期</label>
+      <input id="date_to" name="date_to" type="date" value="{{ values.date_to }}"
+             {%- if field_errors.date_to %} aria-invalid="true" aria-describedby="date_to-error"{% endif %}>
+      {% with name = "date_to" %}{% include "partials/_field_errors.html" %}{% endwith %}
+    </div>
+  </div>
+
+  <details class="voucher advanced"{% if advanced_open %} open{% endif %}>
+    <summary>更多條件</summary>
+    <div class="stack">
+      <label for="merchant">商家</label>
+      <input id="merchant" name="merchant" type="text" list="merchant-options" autocomplete="off"
+             value="{{ values.merchant }}">
+      <datalist id="merchant-options">
+        {% for name in merchant_names %}<option value="{{ name }}"></option>{% endfor %}
+      </datalist>
+
+      <div class="date-range">
+        <div class="stack">
+          <label for="min_amount">最低金額</label>
+          <input id="min_amount" name="min_amount" type="text" inputmode="numeric" autocomplete="off"
+                 value="{{ values.min_amount }}"
+                 {%- if field_errors.min_amount %} aria-invalid="true" aria-describedby="min_amount-error"{% endif %}>
+          {% with name = "min_amount" %}{% include "partials/_field_errors.html" %}{% endwith %}
+        </div>
+        <div class="stack">
+          <label for="max_amount">最高金額</label>
+          <input id="max_amount" name="max_amount" type="text" inputmode="numeric" autocomplete="off"
+                 value="{{ values.max_amount }}"
+                 {%- if field_errors.max_amount %} aria-invalid="true" aria-describedby="max_amount-error"{% endif %}>
+          {% with name = "max_amount" %}{% include "partials/_field_errors.html" %}{% endwith %}
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <button id="btn-search" type="submit">搜尋</button>
+</form>
+
+<p id="txn-loading" class="htmx-indicator muted">搜尋中…</p>
+
+{% if result %}
+<section class="txn-results" aria-label="搜尋結果">
+  <p class="txn-summary" data-count="{{ result.total_count }}" data-expense-net="{{ result.expense_net }}" data-income-total="{{ result.income_total }}">
+    共 {{ result.total_count }} 筆｜支出淨額 {{ "{:,}".format(result.expense_net) }} 元
+    {%- if result.income_total %}｜收入 {{ "{:,}".format(result.income_total) }} 元{% endif %}
+  </p>
+
+  {% if result.rows %}
+  <ul class="txn-rows">
+    {% for row in result.rows %}
+    <li class="txn-row" data-txn-id="{{ row.id }}">
+      <div class="txn-line">
+        <span class="txn-date">{% if row.txn_date.year != today.year %}{{ row.txn_date.year }}/{% endif %}{{ row.txn_date.month }}/{{ row.txn_date.day }}</span>
+        <span class="badge" data-type="{{ row.txn_type }}">{{ row.type_label }}</span>
+        <span class="txn-amount">{{ "{:,}".format(row.amount) }}</span>
+      </div>
+      {% if row.merchant_name or row.description %}
+      <div class="txn-text">
+        {%- if row.merchant_name %}<span class="txn-merchant">{{ row.merchant_name }}</span>{% endif %}
+        {%- if row.merchant_name and row.description %} · {% endif %}
+        {%- if row.description %}{{ row.description }}{% endif -%}
+      </div>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+
+  {% if result.page_count > 1 %}
+  <nav class="pager" aria-label="分頁">
+    {% if prev_url %}<a href="{{ prev_url }}" hx-get="{{ prev_url }}" hx-target="#txn-list" hx-push-url="true" hx-indicator="#txn-loading">上一頁</a>{% else %}<span></span>{% endif %}
+    <span class="muted">第 {{ result.page }} / {{ result.page_count }} 頁</span>
+    {% if next_url %}<a href="{{ next_url }}" hx-get="{{ next_url }}" hx-target="#txn-list" hx-push-url="true" hx-indicator="#txn-loading">下一頁</a>{% else %}<span></span>{% endif %}
+  </nav>
+  {% endif %}
+
+  {% elif result.merchant_not_found %}
+  <p class="empty">找不到商家「{{ values.merchant }}」。</p>
+  {% elif is_default %}
+  <p class="empty">本月還沒有交易。<a href="/txn/new">記一筆</a></p>
+  {% else %}
+  <p class="empty">找不到符合條件的交易。</p>
+  {% endif %}
+</section>
+{% endif %}

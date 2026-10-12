@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block title %}記一筆｜記帳{% endblock %}
 {% block content %}
-<h1>記一筆支出</h1>
+<div class="page-head">
+  <h1>記一筆支出</h1>
+  <a href="/txn">交易列表</a>
+</div>
 <div id="txn-area">
   {% include "partials/txn_form.html" %}
 </div>
