@@ -1,0 +1,75 @@
+{# /txn/new 支出表單。GET 時嵌在 pages/txn_new.html；POST 的 200／422 回應直接回傳這個片段，換掉 #txn-area。 #}
+{% if saved %}
+<div class="notice notice-ok" role="status" data-txn-id="{{ saved.transaction_id }}">
+  已儲存：
+  {%- for label, accounts in account_groups %}{% for a in accounts %}{% if a.id == saved.account_id %}{{ a.name }} {% endif %}{% endfor %}{% endfor -%}
+  {{ "{:,}".format(saved.amount) }} 元
+</div>
+{% for notice in saved.notices %}
+<p class="notice notice-warn" data-code="{{ notice.code }}">{{ notice.message }}</p>
+{% endfor %}
+{% endif %}
+
+{# 500 錯誤片段（_server_error）會換進這裡，表單內容不會被清掉 #}
+<div id="txn-status" aria-live="polite"></div>
+
+{% if form_errors %}
+<div class="alert" role="alert">
+  <ul>
+    {% for code, message in form_errors %}
+    <li{% if code %} data-code="{{ code }}"{% endif %}>{{ message }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<form method="post" action="/txn/new" class="stack" novalidate
+      hx-post="/txn/new" hx-target="#txn-area" hx-swap="innerHTML"
+      hx-disabled-elt="#btn-next, #btn-home">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <label for="amount">金額</label>
+  <input id="amount" name="amount" type="text" inputmode="numeric" autocomplete="off"
+         class="amount" value="{{ values.amount }}" autofocus
+         {%- if field_errors.amount %} aria-invalid="true" aria-describedby="amount-error"{% endif %}>
+  {% with name = "amount" %}{% include "partials/_field_errors.html" %}{% endwith %}
+
+  <label for="account_id">科目</label>
+  <select id="account_id" name="account_id"
+          {%- if field_errors.account_id %} aria-invalid="true" aria-describedby="account_id-error"{% endif %}>
+    <option value="">請選擇科目</option>
+    {% for label, accounts in account_groups %}
+    {% if label %}<optgroup label="{{ label }}">{% endif %}
+      {% for a in accounts %}
+      <option value="{{ a.id }}"{% if values.account_id == a.id|string %} selected{% endif %}>{{ a.name }}</option>
+      {% endfor %}
+    {% if label %}</optgroup>{% endif %}
+    {% endfor %}
+  </select>
+  {% with name = "account_id" %}{% include "partials/_field_errors.html" %}{% endwith %}
+
+  <label for="payment_method_id">付款方式</label>
+  <select id="payment_method_id" name="payment_method_id"
+          {%- if field_errors.payment_method_id %} aria-invalid="true" aria-describedby="payment_method_id-error"{% endif %}>
+    <option value="">請選擇付款方式</option>
+    {% for pm in payment_methods %}
+    <option value="{{ pm.id }}"{% if values.payment_method_id == pm.id|string %} selected{% endif %}>{{ pm.name }}</option>
+    {% endfor %}
+  </select>
+  {% with name = "payment_method_id" %}{% include "partials/_field_errors.html" %}{% endwith %}
+
+  <label for="txn_date">日期</label>
+  <input id="txn_date" name="txn_date" type="date" value="{{ values.txn_date }}"
+         {%- if field_errors.txn_date %} aria-invalid="true" aria-describedby="txn_date-error"{% endif %}>
+  {% with name = "txn_date" %}{% include "partials/_field_errors.html" %}{% endwith %}
+
+  <label for="description">備註（選填）</label>
+  <input id="description" name="description" type="text" autocomplete="off" value="{{ values.description }}"
+         {%- if field_errors.description %} aria-invalid="true" aria-describedby="description-error"{% endif %}>
+  {% with name = "description" %}{% include "partials/_field_errors.html" %}{% endwith %}
+
+  <div class="actions">
+    <button id="btn-next" type="submit" name="action" value="next">儲存並記下一筆</button>
+    <button id="btn-home" type="submit" name="action" value="home" class="secondary">儲存並回首頁</button>
+  </div>
+</form>

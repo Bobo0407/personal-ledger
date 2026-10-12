@@ -1,0 +1,4 @@
+{# 參數：name（欄位名稱）、field_errors #}
+{% for code, message in field_errors.get(name, []) %}
+<p class="field-error" id="{{ name }}-error"{% if code %} data-code="{{ code }}"{% endif %}>{{ message }}</p>
+{% endfor %}

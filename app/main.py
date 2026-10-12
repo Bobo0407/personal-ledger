@@ -19,6 +19,7 @@ from app.deps import NotAuthenticated, login_url
 from app.logging_config import setup_logging
 from app.routers import auth as auth_router
 from app.routers import home as home_router
+from app.routers import txn as txn_router
 from app.templating import templates
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -26,8 +27,15 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 logger = logging.getLogger(__name__)
 
 
-async def _redirect_to_login(request: Request, exc: Exception) -> RedirectResponse:
+def _is_htmx(request: Request) -> bool:
+    return request.headers.get("hx-request") == "true"
+
+
+async def _redirect_to_login(request: Request, exc: Exception) -> Response:
     assert isinstance(exc, NotAuthenticated)
+    if _is_htmx(request):
+        # HTMX 會在背景跟隨 303，把登入頁塞進局部區塊；改用 HX-Redirect 讓整頁導向
+        return Response(status_code=200, headers={"HX-Redirect": login_url(exc.next_path)})
     return RedirectResponse(login_url(exc.next_path), status_code=303)
 
 
@@ -39,6 +47,8 @@ async def _server_error(request: Request, exc: Exception) -> Response:
     """
     # 只記方法與路徑，不記查詢字串與表單內容
     logger.error("unhandled error %s %s", request.method, request.url.path, exc_info=exc)
+    if _is_htmx(request):
+        return templates.TemplateResponse(request, "partials/error.html", {}, status_code=500)
     return templates.TemplateResponse(request, "pages/error.html", {}, status_code=500)
 
 
@@ -59,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(auth_router.router)
     app.include_router(home_router.router)
+    app.include_router(txn_router.router)
     app.add_exception_handler(NotAuthenticated, _redirect_to_login)
     app.add_exception_handler(Exception, _server_error)
     return app

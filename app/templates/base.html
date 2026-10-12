@@ -6,6 +6,13 @@
   <meta name="robots" content="noindex, nofollow">
   <title>{% block title %}記帳{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
+  {#- HTMX 回應處理（htmx 2 預設不 swap 4xx／5xx）：
+      422 表單錯誤、409 確認畫面照常換進目標；5xx 錯誤片段換進 #txn-status，不清掉表單（規格 9.3）。
+      這個設定會整個取代 htmx 預設的 responseHandling，所以列出完整清單。 #}
+  <meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"409","swap":true,"error":false},{"code":"422","swap":true,"error":false},{"code":"5..","swap":true,"error":true,"target":"#txn-status"},{"code":"[45]..","swap":false,"error":true},{"code":"...","swap":false}]}'>
+  {#- vendored htmx 2.0.10（npm htmx.org@2.0.10 dist/htmx.min.js，
+      sha256 71ea67185bfa8c98c39d31717c6fce5d852370fcdfd129db4543774d3145c0de） #}
+  <script src="{{ url_for('static', path='js/htmx.min.js') }}" defer></script>
 </head>
 <body>
   <main class="container">
