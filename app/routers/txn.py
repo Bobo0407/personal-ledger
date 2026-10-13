@@ -11,6 +11,13 @@ POST 只支援 HTMX（V1 不要求無 JS 版本），回應一律是 partials/ �
 - 422：表單解析失敗（Web 欄位錯誤）或 P1 ValidationFailed（規格 9.3）
 - 409：P1 ConfirmationRequired，回傳確認畫面；按「仍要儲存」帶 confirmed 重送（規格 9.3、T19）
 
+P2 Step 5A：/txn/new 的類型切換（支出／收入／轉帳），只有新增
+- GET /txn/new?type=expense|income|transfer（預設 expense；不合法的值一律當成 expense）。
+  切換類型只帶日期與金額；新表單拿到新的送出權杖。
+- POST /txn/new 依隱藏欄位 txn_type 分派；不合法的 txn_type 直接 422，不會呼叫 orchestration。
+  三種類型都用同一套一次性送出權杖（transactions._post_once）。
+- 轉帳轉入信用卡時由 P1 自動記成繳卡費（D9）；成功訊息讀回實際存下的交易類型。
+
 P2 Step 4A：交易明細、修改（只限快速記帳格式的支出）、軟刪除、還原
 - GET /txn/{id}：明細（含已刪除的交易）；找不到 → 404
 - GET/POST /txn/{id}/edit：txn_detail.require_quick_entry_expense() 先擋下不能用表單修改的交易，
@@ -39,6 +46,7 @@ P2 Step 2：
 """
 
 import secrets
+from datetime import date
 from typing import Annotated
 from urllib.parse import urlencode
 
@@ -52,7 +60,7 @@ from app.db import get_db
 from app.deps import require_user
 from app.models import User
 from app.schemas.search import parse_page, parse_search
-from app.schemas.txn import FormParseError, parse_expense
+from app.schemas.txn import FormParseError, parse_expense, parse_income, parse_transfer
 from app.services import (
     audit_history,
     entry_options,
@@ -68,7 +76,7 @@ from app.templating import render
 
 router = APIRouter()
 
-# 畫面上的欄位（錯誤可以顯示在欄位旁）
+# 畫面上的欄位（錯誤可以顯示在欄位旁）。FORM_FIELDS 是支出表單（新增與修改共用）。
 FORM_FIELDS = (
     "txn_date",
     "amount",
@@ -80,10 +88,43 @@ FORM_FIELDS = (
     "invoice_no",
 )
 TOKEN_FIELD = "submission_token"
-# P1 Issue.field 與畫面欄位名稱不同的對應：商家在畫面上輸入的是名稱
-ISSUE_FIELD_TO_FORM = {"merchant_id": "merchant_name"}
-# 「儲存並記下一筆」保留的欄位（UF02）；其他欄位清空，並換一個新的送出權杖
-KEPT_AFTER_SAVE = ("txn_date", "payment_method_id")
+
+# --- /txn/new 的交易類型（P2 Step 5A）---
+# 欄位、儲存並記下一筆保留的欄位、表單模板、標題集中在這裡
+TYPE_EXPENSE, TYPE_INCOME, TYPE_TRANSFER = "expense", "income", "transfer"
+TXN_TYPE_CHOICES = ((TYPE_EXPENSE, "支出"), (TYPE_INCOME, "收入"), (TYPE_TRANSFER, "轉帳"))
+TYPE_FIELDS = {
+    TYPE_EXPENSE: FORM_FIELDS,
+    TYPE_INCOME: ("txn_date", "amount", "account_id", "receive_account_id", "description"),
+    TYPE_TRANSFER: (
+        "txn_date",
+        "amount",
+        "from_account_id",
+        "to_account_id",
+        "fee_amount",
+        "fee_account_id",
+        "description",
+    ),
+}
+# 「儲存並記下一筆」保留的欄位（UF02 的精神：日期 + 錢從哪裡來）；其他欄位清空，並換新的送出權杖
+KEPT_AFTER_SAVE = {
+    TYPE_EXPENSE: ("txn_date", "payment_method_id"),
+    TYPE_INCOME: ("txn_date", "receive_account_id"),
+    TYPE_TRANSFER: ("txn_date", "from_account_id"),
+}
+# 切換類型時保留的欄位
+KEPT_ON_SWITCH = ("txn_date", "amount")
+FORM_TEMPLATES = {
+    TYPE_EXPENSE: "partials/txn_form.html",
+    TYPE_INCOME: "partials/txn_form_income.html",
+    TYPE_TRANSFER: "partials/txn_form_transfer.html",
+}
+HEADINGS = {TYPE_EXPENSE: "記一筆支出", TYPE_INCOME: "記一筆收入", TYPE_TRANSFER: "記一筆轉帳"}
+
+# P1 Issue.field 與畫面欄位名稱不同的對應（只是顯示位置，不是規則）：
+# - 商家在畫面上輸入的是名稱
+# - 轉帳轉入信用卡時 P1 改走繳卡費（D9），錯誤欄位是 card_account_id，畫面上就是「轉入帳戶」
+ISSUE_FIELD_TO_FORM = {"merchant_id": "merchant_name", "card_account_id": "to_account_id"}
 
 ACTION_NEXT = "next"  # 儲存並記下一筆
 ACTION_HOME = "home"  # 儲存並回首頁
@@ -97,7 +138,19 @@ def _new_token() -> str:
     return secrets.token_urlsafe(24)
 
 
-def _options(db: Session) -> dict:
+def _options(db: Session, txn_type: str = TYPE_EXPENSE) -> dict:
+    """各類型表單的下拉選單（只列啟用中的末層科目；P1 validation 仍是最終檢查）。"""
+    if txn_type == TYPE_INCOME:
+        return {
+            "income_groups": entry_options.income_account_groups(db),
+            "receive_groups": entry_options.balance_sheet_groups(db),
+        }
+    if txn_type == TYPE_TRANSFER:
+        return {
+            "from_groups": entry_options.balance_sheet_groups(db, exclude_credit_cards=True),
+            "to_groups": entry_options.balance_sheet_groups(db),
+            "fee_groups": entry_options.expense_account_groups(db),
+        }
     methods, default_pm_id = entry_options.payment_method_choices(db)
     return {
         "account_groups": entry_options.expense_account_groups(db),
@@ -108,16 +161,18 @@ def _options(db: Session) -> dict:
     }
 
 
-def _blank_values() -> dict[str, str]:
-    values = dict.fromkeys(FORM_FIELDS, "")
+def _blank_values(txn_type: str = TYPE_EXPENSE) -> dict[str, str]:
+    values = dict.fromkeys(TYPE_FIELDS[txn_type], "")
     values[TOKEN_FIELD] = _new_token()
     return values
 
 
-def _initial_values(default_pm_id: int | None) -> dict[str, str]:
-    values = _blank_values()
+def _initial_values(txn_type: str, default_pm_id: int | None) -> dict[str, str]:
+    values = _blank_values(txn_type)
     values["txn_date"] = clock.today().isoformat()
-    values["payment_method_id"] = "" if default_pm_id is None else str(default_pm_id)
+    if txn_type == TYPE_EXPENSE:
+        # 預設付款方式只屬於支出（P11）；收入、轉帳不設預設帳戶
+        values["payment_method_id"] = "" if default_pm_id is None else str(default_pm_id)
     return values
 
 
@@ -131,14 +186,15 @@ def _form(
     form_errors: list[ErrorItem] | None = None,
     saved: dict | None = None,
     txn_id: int | None = None,
-    template: str = "partials/txn_form.html",
+    template: str | None = None,
+    txn_type: str = TYPE_EXPENSE,
 ) -> Response:
-    """txn_id 不是 None 時是修改表單（/txn/{id}/edit，沒有送出權杖）。"""
+    """txn_id 不是 None 時是修改表單（/txn/{id}/edit，只有支出，沒有送出權杖）。"""
     return render(
         request,
-        template,
+        template or FORM_TEMPLATES[txn_type],
         {
-            **_options(db),
+            **_options(db, txn_type),
             "values": values,
             "field_errors": field_errors or {},
             "form_errors": form_errors or [],
@@ -146,20 +202,23 @@ def _form(
             "mode": "edit" if txn_id is not None else "create",
             "form_url": f"/txn/{txn_id}/edit" if txn_id is not None else "/txn/new",
             "txn_id": txn_id,
+            "txn_type": txn_type,
         },
         status_code=status_code,
     )
 
 
-def _split_issues(issues: tuple[Issue, ...]) -> tuple[dict[str, list[ErrorItem]], list[ErrorItem]]:
+def _split_issues(
+    issues: tuple[Issue, ...], fields: tuple[str, ...] = FORM_FIELDS
+) -> tuple[dict[str, list[ErrorItem]], list[ErrorItem]]:
     """有對應欄位的錯誤放在欄位旁；field 為 None 或畫面上沒有的欄位（例如分錄層級的
-    V03、V04）放在表單頂端，不能默默吞掉。"""
+    V03、V04、TXN_STRUCTURE）放在表單頂端，不能默默吞掉。"""
     by_field: dict[str, list[ErrorItem]] = {}
     top: list[ErrorItem] = []
     for issue in issues:
         item = (issue.code, issue.message)
         field = ISSUE_FIELD_TO_FORM.get(issue.field, issue.field)
-        if field in FORM_FIELDS:
+        if field in fields:
             by_field.setdefault(field, []).append(item)
         else:
             top.append(item)
@@ -170,24 +229,66 @@ def _parse_confirmed(value: str) -> tuple[str, ...]:
     return tuple(code for code in (c.strip() for c in value.split(",")) if code)
 
 
+def _txn_type(value: str | None) -> str:
+    """GET 的 ?type=：只接受三種類型，其他一律當成支出。"""
+    return value if value in TYPE_FIELDS else TYPE_EXPENSE
+
+
 @router.get("/txn/new")
 def new_txn(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(require_user)],
 ) -> Response:
-    options = _options(db)
+    params = request.query_params
+    txn_type = _txn_type(params.get("type"))
+    options = _options(db, txn_type)
+    values = _initial_values(txn_type, options.get("default_payment_method_id"))
+    # 類型切換（HTMX hx-include）帶來的日期與金額；日期格式不對就維持今天
+    if params.get("amount"):
+        values["amount"] = params["amount"]
+    if params.get("txn_date"):
+        try:
+            values["txn_date"] = date.fromisoformat(params["txn_date"]).isoformat()
+        except ValueError:
+            pass
+    template = "partials/txn_new_body.html" if _is_htmx(request) else "pages/txn_new.html"
     return render(
         request,
-        "pages/txn_new.html",
+        template,
         {
             **options,
-            "values": _initial_values(options["default_payment_method_id"]),
+            "values": values,
             "field_errors": {},
             "form_errors": [],
             "saved": None,
+            "mode": "create",
+            "form_url": "/txn/new",
+            "txn_type": txn_type,
+            "txn_type_choices": TXN_TYPE_CHOICES,
+            "heading": HEADINGS[txn_type],
+            "form_template": FORM_TEMPLATES[txn_type],
         },
     )
+
+
+def _record(db: Session, txn_type: str, data, *, confirmed, user_id: int, token: str):
+    """依類型呼叫 P1 orchestration；帳務規則全部在 P1。"""
+    if txn_type == TYPE_EXPENSE:
+        merchant_id = None
+        if data.merchant_name is not None:
+            merchant_id = merchants.resolve_or_create(db, data.merchant_name).id
+        form = data.to_form(merchant_id=merchant_id)
+        record = transactions.record_expense
+    elif txn_type == TYPE_INCOME:
+        form, record = data.to_form(), transactions.record_income
+    else:
+        form, record = data.to_form(), transactions.record_transfer
+    result = record(db, form, confirmed=confirmed, user_id=user_id, submission_token=token)
+    return result, form
+
+
+_PARSERS = {TYPE_EXPENSE: parse_expense, TYPE_INCOME: parse_income, TYPE_TRANSFER: parse_transfer}
 
 
 @router.post("/txn/new")
@@ -195,6 +296,7 @@ def create_txn(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(require_user)],
+    txn_type: Annotated[str, Form()] = TYPE_EXPENSE,
     txn_date: Annotated[str, Form()] = "",
     amount: Annotated[str, Form()] = "",
     account_id: Annotated[str, Form()] = "",
@@ -203,11 +305,26 @@ def create_txn(
     merchant_name: Annotated[str, Form()] = "",
     voucher_type: Annotated[str, Form()] = "",
     invoice_no: Annotated[str, Form()] = "",
+    receive_account_id: Annotated[str, Form()] = "",
+    from_account_id: Annotated[str, Form()] = "",
+    to_account_id: Annotated[str, Form()] = "",
+    fee_amount: Annotated[str, Form()] = "",
+    fee_account_id: Annotated[str, Form()] = "",
     submission_token: Annotated[str, Form()] = "",
     confirmed: Annotated[str, Form()] = "",
     action: Annotated[str, Form()] = ACTION_NEXT,
 ) -> Response:
-    values = {
+    if txn_type not in TYPE_FIELDS:
+        # 表單一定帶合法的 txn_type；不合法代表表單被竄改或過期：不呼叫 orchestration
+        return _form(
+            request,
+            db,
+            _initial_values(TYPE_EXPENSE, None),
+            status_code=422,
+            form_errors=[(None, "表單已失效，請重新整理後再試。")],
+        )
+
+    submitted = {
         "txn_date": txn_date,
         "amount": amount,
         "account_id": account_id,
@@ -216,55 +333,51 @@ def create_txn(
         "merchant_name": merchant_name,
         "voucher_type": voucher_type,
         "invoice_no": invoice_no,
-        TOKEN_FIELD: submission_token,
+        "receive_account_id": receive_account_id,
+        "from_account_id": from_account_id,
+        "to_account_id": to_account_id,
+        "fee_amount": fee_amount,
+        "fee_account_id": fee_account_id,
     }
+    fields = TYPE_FIELDS[txn_type]
+    values = {name: submitted[name] for name in fields}
+    values[TOKEN_FIELD] = submission_token
+
+    def form_response(**kwargs) -> Response:
+        return _form(request, db, values, txn_type=txn_type, **kwargs)
+
     if action == ACTION_EDIT:
-        return _form(request, db, values)
+        return form_response()
     if action != ACTION_HOME:
         action = ACTION_NEXT
 
     try:
-        data = parse_expense(values)
+        data = _PARSERS[txn_type](values)
     except FormParseError as exc:
         if TOKEN_FIELD in exc.errors:
             # 權杖缺少或格式不對：這份表單不能再用；換一個新權杖讓使用者重新送出
             values[TOKEN_FIELD] = _new_token()
-        field_errors = {f: [(None, msg)] for f, msg in exc.errors.items() if f in FORM_FIELDS}
-        form_errors = [(None, msg) for f, msg in exc.errors.items() if f not in FORM_FIELDS]
-        return _form(
-            request,
-            db,
-            values,
-            status_code=422,
-            field_errors=field_errors,
-            form_errors=form_errors,
-        )
+        field_errors = {f: [(None, msg)] for f, msg in exc.errors.items() if f in fields}
+        form_errors = [(None, msg) for f, msg in exc.errors.items() if f not in fields]
+        return form_response(status_code=422, field_errors=field_errors, form_errors=form_errors)
 
     # 已用過的權杖：直接回傳第一次的結果，不建立商家、不驗證、不寫入（重送不得有任何副作用）
+    form = None
     result = transactions.find_replay(db, data.submission_token)
     if result is None:
-        merchant_id = None
-        if data.merchant_name is not None:
-            merchant_id = merchants.resolve_or_create(db, data.merchant_name).id
-        form = data.to_form(merchant_id=merchant_id)
-
         try:
-            result = transactions.record_expense(
+            result, form = _record(
                 db,
-                form,
+                txn_type,
+                data,
                 confirmed=_parse_confirmed(confirmed),
                 user_id=user.id,
-                submission_token=data.submission_token,
+                token=data.submission_token,
             )
         except ValidationFailed as exc:
-            field_errors, form_errors = _split_issues(exc.result.errors)
-            return _form(
-                request,
-                db,
-                values,
-                status_code=422,
-                field_errors=field_errors,
-                form_errors=form_errors,
+            field_errors, form_errors = _split_issues(exc.result.errors, fields)
+            return form_response(
+                status_code=422, field_errors=field_errors, form_errors=form_errors
             )
         except ConfirmationRequired as exc:
             # 確認畫面只帶「這次觸發」的代碼，加上之前已確認的；內容不能在確認畫面修改，
@@ -274,7 +387,7 @@ def create_txn(
                 request,
                 "partials/txn_confirm.html",
                 {
-                    "values": values,
+                    "values": {"txn_type": txn_type, **values},
                     "pending": exc.pending,
                     "confirmed": ",".join(codes),
                     "action": action,
@@ -285,14 +398,14 @@ def create_txn(
     if action == ACTION_HOME:
         return Response(status_code=200, headers={"HX-Redirect": "/"})
 
-    # 儲存並記下一筆（UF02）：保留日期、付款方式，其他欄位清空，並換新的送出權杖
-    next_values = _blank_values()
-    for key in KEPT_AFTER_SAVE:
+    # 儲存並記下一筆：保留這個類型的「日期 + 錢從哪裡來」，其他欄位清空，並換新的送出權杖
+    next_values = _blank_values(txn_type)
+    for key in KEPT_AFTER_SAVE[txn_type]:
         next_values[key] = values[key]
     if result.replayed:
         # 同一個權杖已經建立過交易：這次沒有寫入，只告知第一次建立的那筆
         saved = {"transaction_id": result.transaction_id, "replayed": True}
-    else:
+    elif txn_type == TYPE_EXPENSE:
         saved = {
             "transaction_id": result.transaction_id,
             "replayed": False,
@@ -300,7 +413,17 @@ def create_txn(
             "amount": form.amount,
             "notices": result.notices,  # V13 等「提醒」：已經儲存，只顯示不阻擋
         }
-    return _form(request, db, next_values, saved=saved)
+    else:
+        # 讀回實際存下的交易：轉入信用卡時 P1 已記成繳卡費（D9），Web 不自己判斷
+        detail = txn_detail.get_detail(db, result.transaction_id)
+        saved = {
+            "transaction_id": result.transaction_id,
+            "replayed": False,
+            "label": detail.type_label,
+            "amount": detail.magnitude,
+            "notices": result.notices,
+        }
+    return _form(request, db, next_values, txn_type=txn_type, saved=saved)
 
 
 # --- GET /txn 交易列表與搜尋（P2 Step 3）---------------------------------------------------

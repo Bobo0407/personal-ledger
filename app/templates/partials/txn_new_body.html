@@ -1,0 +1,9 @@
+{# /txn/new 的主體：標題、類型切換、表單。切換類型時（HTMX）整塊換掉，DOM 裡只會有一份表單與一個送出權杖。 #}
+<div class="page-head">
+  <h1>{{ heading }}</h1>
+  <a href="/txn">交易列表</a>
+</div>
+{% include "partials/_txn_type_tabs.html" %}
+<div id="txn-area">
+  {% include form_template %}
+</div>

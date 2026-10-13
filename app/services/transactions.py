@@ -174,28 +174,31 @@ def find_replay(db: Session, submission_token: str) -> PostResult | None:
     return _replayed(db, submission_ref(submission_token))
 
 
-def record_expense(
+def _post_once(
     db: Session,
-    form: ExpenseForm,
+    make_draft: Callable[[], EntryDraft],
     *,
-    confirmed: Iterable[str] = (),
-    user_id: int | None = None,
-    submission_token: str | None = None,
+    confirmed: Iterable[str],
+    user_id: int | None,
+    submission_token: str | None,
 ) -> PostResult:
-    """submission_token（Web 表單的一次性權杖，規格 9.3「重複送出」）：
+    """新增交易的共用流程（P2 Step 5A 由 record_expense 抽出，行為不變）。
+
+    submission_token 是 None（一般 service 呼叫，例如 CLI、測試）：直接 ledger.post()，不做防重。
+    有 submission_token（Web 表單的一次性權杖，規格 9.3「重複送出」）：
     - 這個權杖已經建立過交易（含之後被軟刪除的）→ 不驗證、不寫入、不寫稽核，
-      回傳第一次建立的 transaction_id（replayed=True）。
-    - 否則以 source_ref = "submit:<token>" 寫入；兩個請求同時送出時，
+      回傳第一次建立的 transaction_id（replayed=True）。草稿也不會產生（make_draft 不被呼叫）。
+    - 否則以 source = MANUAL、source_ref = "submit:<token>" 寫入；兩個請求同時送出時，
       後到的會撞到 UNIQUE(source, source_ref)，rollback 後改回傳先寫入的那筆。
     """
     if submission_token is None:
-        return ledger.post(db, _draft_expense(db, form), confirmed=confirmed, user_id=user_id)
+        return ledger.post(db, make_draft(), confirmed=confirmed, user_id=user_id)
 
     ref = submission_ref(submission_token)
     replay = _replayed(db, ref)
     if replay is not None:
         return replay
-    draft = replace(_draft_expense(db, form), source_ref=ref)
+    draft = replace(make_draft(), source_ref=ref)
     try:
         return ledger.post(db, draft, confirmed=confirmed, user_id=user_id)
     except IntegrityError:
@@ -206,17 +209,59 @@ def record_expense(
         return replay
 
 
-def record_income(
-    db: Session, form: IncomeForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
+def record_expense(
+    db: Session,
+    form: ExpenseForm,
+    *,
+    confirmed: Iterable[str] = (),
+    user_id: int | None = None,
+    submission_token: str | None = None,
 ) -> PostResult:
-    return ledger.post(db, _draft_income(db, form), confirmed=confirmed, user_id=user_id)
+    """submission_token 的行為見 _post_once()。"""
+    return _post_once(
+        db,
+        lambda: _draft_expense(db, form),
+        confirmed=confirmed,
+        user_id=user_id,
+        submission_token=submission_token,
+    )
+
+
+def record_income(
+    db: Session,
+    form: IncomeForm,
+    *,
+    confirmed: Iterable[str] = (),
+    user_id: int | None = None,
+    submission_token: str | None = None,
+) -> PostResult:
+    """submission_token 的行為見 _post_once()。"""
+    return _post_once(
+        db,
+        lambda: _draft_income(db, form),
+        confirmed=confirmed,
+        user_id=user_id,
+        submission_token=submission_token,
+    )
 
 
 def record_transfer(
-    db: Session, form: TransferForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
+    db: Session,
+    form: TransferForm,
+    *,
+    confirmed: Iterable[str] = (),
+    user_id: int | None = None,
+    submission_token: str | None = None,
 ) -> PostResult:
-    """帳戶間轉帳。轉入帳戶是信用卡時自動改成信用卡繳款（D9）。"""
-    return ledger.post(db, _draft_transfer(db, form), confirmed=confirmed, user_id=user_id)
+    """帳戶間轉帳。轉入帳戶是信用卡時自動改成信用卡繳款（D9）；
+    繳卡費同樣帶著這個送出權杖寫入。submission_token 的行為見 _post_once()。"""
+    return _post_once(
+        db,
+        lambda: _draft_transfer(db, form),
+        confirmed=confirmed,
+        user_id=user_id,
+        submission_token=submission_token,
+    )
 
 
 def record_card_payment(

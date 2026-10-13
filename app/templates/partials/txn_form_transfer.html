@@ -1,0 +1,25 @@
+{# 轉帳表單（P2 Step 5A，UF03、UF04）：轉入信用卡時由 P1 自動記成繳卡費（D9），畫面不判斷。
+   轉出帳戶的選項不列信用卡（只是不提供一定會被 P6 擋下的選項，規則仍由 P1 檢查）。 #}
+{% import "partials/_fields.html" as f with context %}
+{% include "partials/_txn_form_head.html" %}
+
+<form method="post" action="/txn/new" class="stack" novalidate
+      hx-post="/txn/new" hx-target="#txn-area" hx-swap="innerHTML"
+      hx-disabled-elt="#btn-next, #btn-home">
+  {{ f.create_hidden("transfer") }}
+  {{ f.amount_input() }}
+  {{ f.account_select("from_account_id", "轉出帳戶", from_groups, "請選擇轉出帳戶") }}
+  {{ f.account_select("to_account_id", "轉入帳戶", to_groups, "請選擇轉入帳戶") }}
+
+  <details class="voucher fee"{% if values.fee_amount or values.fee_account_id or field_errors.fee_amount or field_errors.fee_account_id %} open{% endif %}>
+    <summary>手續費（選填）</summary>
+    <div class="stack">
+      {{ f.amount_input("fee_amount", "手續費", autofocus=False, css="") }}
+      {{ f.account_select("fee_account_id", "手續費科目", fee_groups, "請選擇手續費科目") }}
+    </div>
+  </details>
+
+  {{ f.date_input() }}
+  {{ f.description_input() }}
+  {{ f.save_buttons() }}
+</form>

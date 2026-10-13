@@ -1,0 +1,10 @@
+{# 記帳類型切換（P2 Step 5A）。一般連結即可整頁切換；HTMX 只換掉 #txn-new 並更新網址。
+   切換時只帶日期與金額（hx-include），其他欄位不保留；新表單會拿到新的送出權杖。 #}
+<nav class="type-tabs" aria-label="交易類型">
+  {% for value, label in txn_type_choices %}
+  <a href="/txn/new?type={{ value }}"
+     hx-get="/txn/new?type={{ value }}" hx-target="#txn-new" hx-swap="innerHTML"
+     hx-push-url="/txn/new?type={{ value }}" hx-include="#amount, #txn_date"
+     data-type="{{ value }}"{% if value == txn_type %} class="active" aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>

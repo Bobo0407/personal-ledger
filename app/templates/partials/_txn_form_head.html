@@ -1,0 +1,37 @@
+{# 新增表單頂部（支出、收入、轉帳共用）：儲存結果、提醒、500 錯誤區、頂端錯誤橫幅。 #}
+{% if saved and saved.replayed %}
+{# 同一個送出權杖再次送出：沒有重複建立（規格 9.3） #}
+<div class="notice notice-ok" role="status" data-txn-id="{{ saved.transaction_id }}" data-replayed="true">
+  這筆已經儲存過，沒有重複建立。
+</div>
+{% elif saved and saved.label %}
+{# 收入、轉帳（P2 Step 5A）：類型與金額讀回實際存下的交易（例如轉入信用卡 → 繳卡費） #}
+<div class="notice notice-ok" role="status" data-txn-id="{{ saved.transaction_id }}">
+  已儲存：{{ saved.label }} {{ "{:,}".format(saved.amount) }} 元
+</div>
+{% for notice in saved.notices %}
+<p class="notice notice-warn" data-code="{{ notice.code }}">{{ notice.message }}</p>
+{% endfor %}
+{% elif saved %}
+<div class="notice notice-ok" role="status" data-txn-id="{{ saved.transaction_id }}">
+  已儲存：
+  {%- for label, accounts in account_groups %}{% for a in accounts %}{% if a.id == saved.account_id %}{{ a.name }} {% endif %}{% endfor %}{% endfor -%}
+  {{ "{:,}".format(saved.amount) }} 元
+</div>
+{% for notice in saved.notices %}
+<p class="notice notice-warn" data-code="{{ notice.code }}">{{ notice.message }}</p>
+{% endfor %}
+{% endif %}
+
+{# 500 錯誤片段（_server_error）會換進這裡，表單內容不會被清掉 #}
+<div id="txn-status" aria-live="polite"></div>
+
+{% if form_errors %}
+<div class="alert" role="alert">
+  <ul>
+    {% for code, message in form_errors %}
+    <li{% if code %} data-code="{{ code }}"{% endif %}>{{ message }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}

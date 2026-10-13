@@ -22,7 +22,7 @@ from typing import Annotated
 from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError
 
 from app.models.enums import VoucherType
-from app.services.entries import ExpenseForm
+from app.services.entries import ExpenseForm, IncomeForm, TransferForm
 
 _INT = re.compile(r"[+-]?[0-9]+")
 _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -37,6 +37,11 @@ PARSE_MESSAGES = {
     "account_id": "請重新選擇科目",
     "payment_method_id": "請重新選擇付款方式",
     "voucher_type": "請重新選擇憑證類型",
+    "receive_account_id": "請重新選擇收款帳戶",
+    "from_account_id": "請重新選擇轉出帳戶",
+    "to_account_id": "請重新選擇轉入帳戶",
+    "fee_amount": "請輸入整數手續費",
+    "fee_account_id": "請重新選擇手續費科目",
     "submission_token": "表單已失效，請重新整理後再試。",
 }
 
@@ -153,6 +158,68 @@ def parse_expense(
     只有修改才傳 False。
     """
     model = ExpenseInput if require_submission_token else ExpenseEditInput
+    return _validate(model, raw)
+
+
+class IncomeInput(BaseModel):
+    """收入（P2 Step 5A，UF03）：只有新增，一次性送出權杖必填。不開放商家。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    txn_date: OptionalDate = None
+    amount: OptionalInt = None
+    account_id: OptionalInt = None  # 收入科目
+    receive_account_id: OptionalInt = None
+    description: OptionalText = None
+    submission_token: Annotated[str, BeforeValidator(_parse_token)]
+
+    def to_form(self) -> IncomeForm:
+        return IncomeForm(
+            txn_date=self.txn_date,
+            amount=self.amount,
+            account_id=self.account_id,
+            receive_account_id=self.receive_account_id,
+            description=self.description,
+        )
+
+
+class TransferInput(BaseModel):
+    """轉帳（P2 Step 5A，UF03、UF04）：只有新增，一次性送出權杖必填。
+    轉入信用卡時由 P1 自動改成繳卡費（D9），這裡不判斷。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    txn_date: OptionalDate = None
+    amount: OptionalInt = None
+    from_account_id: OptionalInt = None
+    to_account_id: OptionalInt = None
+    fee_amount: OptionalInt = None
+    fee_account_id: OptionalInt = None
+    description: OptionalText = None
+    submission_token: Annotated[str, BeforeValidator(_parse_token)]
+
+    def to_form(self) -> TransferForm:
+        return TransferForm(
+            txn_date=self.txn_date,
+            amount=self.amount,
+            from_account_id=self.from_account_id,
+            to_account_id=self.to_account_id,
+            fee_amount=self.fee_amount,
+            fee_account_id=self.fee_account_id,
+            description=self.description,
+        )
+
+
+def parse_income(raw: dict[str, str]) -> IncomeInput:
+    return _validate(IncomeInput, raw)
+
+
+def parse_transfer(raw: dict[str, str]) -> TransferInput:
+    return _validate(TransferInput, raw)
+
+
+def _validate(model, raw: dict[str, str]):
+    """解析表單；無法解析時丟 FormParseError（{欄位: 訊息}）。"""
     try:
         return model.model_validate(raw)
     except ValidationError as exc:
