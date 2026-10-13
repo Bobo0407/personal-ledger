@@ -10,6 +10,12 @@
   轉帳、繳卡費沒有費用分錄，自然不計入支出；轉帳手續費是費用分錄，計入支出。不依 txn_type 特判。
 - 商家條件：services/merchants.resolve()（別名與標準名稱，正規化後完全相同）。
   搜尋只讀，找不到商家時回傳 0 筆，不建立商家。
+- 標籤條件（P2 Step 8B）：單一標籤，services/tags.resolve()（正規化後完全相同，含已停用）；
+  找不到時回傳 0 筆，不建立標籤。
+- 退款的分類（P2 Step 8B）：商家、標籤這兩個「分類維度」，退款跟著原交易「目前」的值
+  （repositories/ledger.py 的 _classification_owner）；日期、金額、排序仍然看退款自己。
+  所以「原交易 1,000 + 退款 300」用原交易的商家或標籤搜尋時，支出淨額是 700。
+  退款自己存的 merchant_id 是建立當下的紀錄，不拿來分類。
 """
 
 import calendar
@@ -20,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.models.enums import AccountClass, TxnType
 from app.repositories import ledger as ledger_repo
-from app.services import merchants
+from app.services import merchants, tags
 
 PAGE_SIZE = 50
 
@@ -44,6 +50,7 @@ class SearchFilters:
     merchant_name: str | None = None
     min_amount: int | None = None
     max_amount: int | None = None
+    tag_name: str | None = None  # P2 Step 8B：單一標籤（正規化後完全相符）
 
 
 @dataclass(frozen=True)
@@ -66,6 +73,7 @@ class Page:
     expense_net: int
     income_total: int
     merchant_not_found: bool = False
+    tag_not_found: bool = False
 
 
 def month_range(today: date) -> tuple[date, date]:
@@ -81,6 +89,12 @@ def search(db: Session, filters: SearchFilters, page: int = 1) -> Page:
         if merchant is None:
             return Page((), 0, 1, 1, 0, 0, merchant_not_found=True)
         merchant_id = merchant.id
+    tag_id = None
+    if filters.tag_name is not None:
+        tag = tags.resolve(db, filters.tag_name)  # 搜尋只讀，不建立標籤；停用的也可以搜
+        if tag is None:
+            return Page((), 0, 1, 1, 0, 0, tag_not_found=True)
+        tag_id = tag.id
 
     criteria = {
         "date_from": filters.date_from,
@@ -88,6 +102,7 @@ def search(db: Session, filters: SearchFilters, page: int = 1) -> Page:
         "merchant_id": merchant_id,
         "min_amount": filters.min_amount,
         "max_amount": filters.max_amount,
+        "tag_id": tag_id,
     }
     total = ledger_repo.count_active_transactions(db, **criteria)
     page_count = max(1, -(-total // PAGE_SIZE))

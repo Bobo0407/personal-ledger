@@ -30,11 +30,13 @@
   <dt>日期</dt><dd>{{ detail.txn_date.isoformat() }}</dd>
   <dt>類型</dt><dd><span class="badge" data-type="{{ detail.txn_type }}">{{ detail.type_label }}</span></dd>
   <dt>金額</dt><dd class="num">{{ "{:,}".format(detail.magnitude) }}</dd>
-  {% if detail.merchant_name %}<dt>商家</dt><dd>{{ detail.merchant_name }}</dd>{% endif %}
+  {% if detail.merchant_name %}<dt>{% if detail.merchant_inherited %}商家（沿用原交易）{% else %}商家{% endif %}</dt><dd data-merchant>{{ detail.merchant_name }}</dd>{% endif %}
   {% if detail.payment_method_name %}<dt>付款方式</dt><dd>{{ detail.payment_method_name }}</dd>{% endif %}
   {% if detail.description %}<dt>備註</dt><dd>{{ detail.description }}</dd>{% endif %}
   {% if detail.voucher_label %}<dt>憑證</dt><dd>{{ detail.voucher_label }}</dd>{% endif %}
   {% if detail.invoice_no %}<dt>發票號碼</dt><dd>{{ detail.invoice_no }}</dd>{% endif %}
+  {% if detail.tags %}<dt>標籤</dt><dd class="tag-list" data-tags>{% for t in detail.tags %}<span class="badge">{{ t.name }}{% if not t.is_active %}（已停用）{% endif %}</span>{% endfor %}</dd>{% endif %}
+  {% if detail.inherited_tags %}<dt>標籤（沿用原交易）</dt><dd class="tag-list" data-inherited-tags>{% for t in detail.inherited_tags %}<span class="badge">{{ t.name }}{% if not t.is_active %}（已停用）{% endif %}</span>{% endfor %}</dd>{% endif %}
   {% if detail.exclude_from_budget %}<dt>不計入預算</dt><dd data-flag="exclude-from-budget">是</dd>{% endif %}
   {% if detail.refunded_amount %}<dt>已退款</dt><dd class="num" data-refunded="{{ detail.refunded_amount }}">{{ "{:,}".format(detail.refunded_amount) }}</dd>{% endif %}
   {% if detail.txn_type == "EXPENSE" and not detail.is_deleted %}<dt>剩餘可退</dt><dd class="num" data-remaining="{{ detail.refundable_amount }}">{{ "{:,}".format(detail.refundable_amount) }}</dd>{% endif %}

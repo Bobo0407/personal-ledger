@@ -90,3 +90,13 @@
 {% macro disabled_elt() -%}
 {% if mode == "edit" %}#btn-save{% else %}#btn-next, #btn-home{% endif %}
 {%- endmacro %}
+
+{# 標籤（P2 Step 8B）：單一文字欄，用「、」「,」「，」分隔；建議清單只列啟用中的標籤 #}
+{% macro tags_input() %}
+<label for="tags">標籤（選填，用「、」分隔）</label>
+<input id="tags" name="tags" type="text" list="tag-options" autocomplete="off" value="{{ values.get('tags', '') }}"{{ invalid("tags") }}>
+<datalist id="tag-options">
+  {% for name in tag_names %}<option value="{{ name }}"></option>{% endfor %}
+</datalist>
+{{ errors("tags") }}
+{% endmacro %}

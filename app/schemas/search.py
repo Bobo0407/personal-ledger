@@ -27,6 +27,7 @@ class TxnSearchInput(BaseModel):
     merchant: OptionalText = None
     min_amount: OptionalInt = None
     max_amount: OptionalInt = None
+    tag: OptionalText = None  # P2 Step 8B：單一標籤
 
     def to_filters(self) -> SearchFilters:
         return SearchFilters(
@@ -35,6 +36,7 @@ class TxnSearchInput(BaseModel):
             merchant_name=self.merchant,
             min_amount=self.min_amount,
             max_amount=self.max_amount,
+            tag_name=self.tag,
         )
 
 

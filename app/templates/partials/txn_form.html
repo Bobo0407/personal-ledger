@@ -62,6 +62,15 @@
          {%- if field_errors.description %} aria-invalid="true" aria-describedby="description-error"{% endif %}>
   {% with name = "description" %}{% include "partials/_field_errors.html" %}{% endwith %}
 
+  {# 標籤（P2 Step 8B，UF01：主表單、備註旁，選填） #}
+  <label for="tags">標籤（選填，用「、」分隔）</label>
+  <input id="tags" name="tags" type="text" list="tag-options" autocomplete="off" value="{{ values.get('tags', '') }}"
+         {%- if field_errors.tags %} aria-invalid="true" aria-describedby="tags-error"{% endif %}>
+  <datalist id="tag-options">
+    {% for name in tag_names %}<option value="{{ name }}"></option>{% endfor %}
+  </datalist>
+  {% with name = "tags" %}{% include "partials/_field_errors.html" %}{% endwith %}
+
   {# 憑證區塊（UF01：展開才填）。有值或有錯誤時預設展開。 #}
   <details class="voucher"{% if values.voucher_type or values.invoice_no or field_errors.voucher_type or field_errors.invoice_no %} open{% endif %}>
     <summary>憑證（選填）</summary>

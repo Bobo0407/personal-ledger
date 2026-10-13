@@ -18,6 +18,13 @@ P2 Step 5A：/txn/new 的類型切換（支出／收入／轉帳），只有新�
   三種類型都用同一套一次性送出權杖（transactions._post_once）。
 - 轉帳轉入信用卡時由 P1 自動記成繳卡費（D9）；成功訊息讀回實際存下的交易類型。
 
+P2 Step 8B：標籤
+- 新增（支出、收入、轉帳；轉入信用卡的繳卡費也走轉帳表單）與修改（支出、收入、轉帳、繳卡費）
+  都有單一標籤文字欄。找不到的名稱先建立並 commit（決策 M2），再交給 P1 寫入關聯。
+- 修改：表單送來的標籤字串是完整的一組（空字串 = 移除全部）；POST 沒有 tags 欄位 = 不處理標籤。
+- 防重送檢查在建立商家、標籤之前；重送不會留下新的主資料。
+- 搜尋：單一標籤；退款的商家、標籤分類跟著原交易目前的值（repositories/ledger.py）。
+
 P2 Step 7：退款（GET/POST /txn/{id}/refund，UF05）
 - 原交易 id 只取自網址；欄位只有日期、退款金額、退回方式（付款方式）、備註。
 - 預填剩餘可退（只是預填，上限由 P1 V07 判斷）；原交易條件、日期由 P1 判斷。
@@ -92,6 +99,7 @@ from app.services import (
     transactions,
     txn_detail,
 )
+from app.services import tags as tag_service
 from app.services.errors import NotFound
 from app.services.issues import Issue
 from app.services.txn_detail import NOT_EDITABLE
@@ -116,6 +124,7 @@ FORM_FIELDS = (
     "interest_amount",
     "interest_account_id",
     "exclude_from_budget",
+    "tags",  # P2 Step 8B：單一文字欄，用「、」「,」「，」分隔
 )
 TOKEN_FIELD = "submission_token"
 
@@ -125,7 +134,14 @@ TYPE_EXPENSE, TYPE_INCOME, TYPE_TRANSFER = "expense", "income", "transfer"
 TXN_TYPE_CHOICES = ((TYPE_EXPENSE, "支出"), (TYPE_INCOME, "收入"), (TYPE_TRANSFER, "轉帳"))
 TYPE_FIELDS = {
     TYPE_EXPENSE: FORM_FIELDS,
-    TYPE_INCOME: ("txn_date", "amount", "account_id", "receive_account_id", "description"),
+    TYPE_INCOME: (
+        "txn_date",
+        "amount",
+        "account_id",
+        "receive_account_id",
+        "description",
+        "tags",
+    ),
     TYPE_TRANSFER: (
         "txn_date",
         "amount",
@@ -134,6 +150,7 @@ TYPE_FIELDS = {
         "fee_amount",
         "fee_account_id",
         "description",
+        "tags",
     ),
 }
 # 「儲存並記下一筆」保留的欄位（UF02 的精神：日期 + 錢從哪裡來）；其他欄位清空，並換新的送出權杖
@@ -183,7 +200,11 @@ REFUND_FIELDS = ("txn_date", "amount", "payment_method_id", "description")
 # P1 Issue.field 與畫面欄位名稱不同的對應（只是顯示位置，不是規則）：
 # - 商家在畫面上輸入的是名稱
 # - 轉帳轉入信用卡時 P1 改走繳卡費（D9），錯誤欄位是 card_account_id，畫面上就是「轉入帳戶」
-ISSUE_FIELD_TO_FORM = {"merchant_id": "merchant_name", "card_account_id": "to_account_id"}
+ISSUE_FIELD_TO_FORM = {
+    "merchant_id": "merchant_name",
+    "card_account_id": "to_account_id",
+    "tag_ids": "tags",  # P2 Step 8B：標籤的 V04／V05 顯示在標籤欄位旁
+}
 
 ACTION_NEXT = "next"  # 儲存並記下一筆
 ACTION_HOME = "home"  # 儲存並回首頁
@@ -215,6 +236,7 @@ def _options(
             "receive_groups": entry_options.balance_sheet_groups(
                 db, keep_id=keep.get("receive_account_id")
             ),
+            "tag_names": tag_service.active_names(db),
         }
     if txn_type == TYPE_TRANSFER:
         to_keep = keep.get("to_account_id")
@@ -235,6 +257,7 @@ def _options(
             "to_groups": to_groups,
             "fee_groups": entry_options.expense_account_groups(db, keep.get("fee_account_id")),
             "card_payment": edit_type == TxnType.CARD_PAYMENT,
+            "tag_names": tag_service.active_names(db),
         }
     methods, default_pm_id = entry_options.payment_method_choices(db, keep.get("payment_method_id"))
     return {
@@ -247,6 +270,7 @@ def _options(
         "default_payment_method_id": default_pm_id,
         "merchant_names": entry_options.merchant_names(db),
         "voucher_choices": entry_options.voucher_choices(),
+        "tag_names": tag_service.active_names(db),
     }
 
 
@@ -365,8 +389,30 @@ def new_txn(
     )
 
 
-def _record(db: Session, txn_type: str, data, *, confirmed, user_id: int, token: str):
-    """依類型呼叫 P1 orchestration；帳務規則全部在 P1。"""
+async def _has_tags_field(request: Request) -> bool:
+    """修改表單有沒有送出 tags 欄位（P2 Step 8B）。
+
+    FastAPI 解析 Form 參數時把空字串視為「沒有值」（fastapi/dependencies/utils.py：
+    Form 欄位 value == "" 時當成未提供），所以 `tags: str | None = Form(None)` 分不出
+    「欄位存在但清空」與「沒有這個欄位」。Starlette 的 FormData 本身分得出來，
+    這裡讀同一份已解析、已快取的 FormData 判斷鍵是否存在。"""
+    return "tags" in await request.form()
+
+
+def _tag_ids(db: Session, text: str | None) -> tuple[int, ...] | None:
+    """標籤欄位 → tag_ids。None（表單沒有這個欄位）= 不處理標籤；空字串 = ()。
+    找不到的名稱先建立並 commit（決策 M2 的取捨，見 services/tags.py）。"""
+    if text is None:
+        return None
+    return tag_service.resolve_or_create_many(db, tag_service.parse(text))
+
+
+def _record(
+    db: Session, txn_type: str, data, *, confirmed, user_id: int, token: str, tag_text: str
+):
+    """依類型呼叫 P1 orchestration；帳務規則全部在 P1。
+    順序：商家 → 標籤（都是主資料，先 commit）
+    → record_*（交易、分錄、標籤關聯、稽核同一次提交）。"""
     if txn_type == TYPE_EXPENSE:
         merchant_id = None
         if data.merchant_name is not None:
@@ -377,7 +423,14 @@ def _record(db: Session, txn_type: str, data, *, confirmed, user_id: int, token:
         form, record = data.to_form(), transactions.record_income
     else:
         form, record = data.to_form(), transactions.record_transfer
-    result = record(db, form, confirmed=confirmed, user_id=user_id, submission_token=token)
+    result = record(
+        db,
+        form,
+        confirmed=confirmed,
+        user_id=user_id,
+        submission_token=token,
+        tag_ids=_tag_ids(db, tag_text),
+    )
     return result, form
 
 
@@ -406,6 +459,7 @@ def create_txn(
     interest_amount: Annotated[str, Form()] = "",
     interest_account_id: Annotated[str, Form()] = "",
     exclude_from_budget: Annotated[str, Form()] = "",
+    tags: Annotated[str, Form()] = "",
     submission_token: Annotated[str, Form()] = "",
     confirmed: Annotated[str, Form()] = "",
     action: Annotated[str, Form()] = ACTION_NEXT,
@@ -437,6 +491,7 @@ def create_txn(
         "interest_amount": interest_amount,
         "interest_account_id": interest_account_id,
         "exclude_from_budget": exclude_from_budget,
+        "tags": tags,
     }
     fields = TYPE_FIELDS[txn_type]
     values = {name: submitted[name] for name in fields}
@@ -472,6 +527,7 @@ def create_txn(
                 confirmed=_parse_confirmed(confirmed),
                 user_id=user.id,
                 token=data.submission_token,
+                tag_text=values.get("tags", ""),
             )
         except ValidationFailed as exc:
             field_errors, form_errors = _split_issues(exc.result.errors, fields)
@@ -527,8 +583,8 @@ def create_txn(
 
 # --- GET /txn 交易列表與搜尋（P2 Step 3）---------------------------------------------------
 
-SEARCH_FIELDS = ("date_from", "date_to", "merchant", "min_amount", "max_amount")
-ADVANCED_SEARCH_FIELDS = ("merchant", "min_amount", "max_amount")
+SEARCH_FIELDS = ("date_from", "date_to", "merchant", "tag", "min_amount", "max_amount")
+ADVANCED_SEARCH_FIELDS = ("merchant", "tag", "min_amount", "max_amount")
 
 
 def _is_htmx(request: Request) -> bool:
@@ -559,6 +615,7 @@ def list_txns(
         "field_errors": {},
         "advanced_open": any(values[key] for key in ADVANCED_SEARCH_FIELDS),
         "merchant_names": entry_options.merchant_names(db),
+        "tag_names": tag_service.active_names(db),
         "is_default": is_default,
         "result": None,
         "today": clock.today(),
@@ -710,6 +767,8 @@ def edit_txn(
     interest_amount: Annotated[str, Form()] = "",
     interest_account_id: Annotated[str, Form()] = "",
     exclude_from_budget: Annotated[str, Form()] = "",
+    tags: Annotated[str | None, Form()] = None,
+    tags_in_form: Annotated[bool, Depends(_has_tags_field)] = False,
     confirmed: Annotated[str, Form()] = "",
     action: Annotated[str, Form()] = "save",
 ) -> Response:
@@ -743,8 +802,12 @@ def edit_txn(
         "interest_amount": interest_amount,
         "interest_account_id": interest_account_id,
         "exclude_from_budget": exclude_from_budget,
+        # 表單沒有標籤欄位時不處理標籤；畫面上顯示目前的標籤
+        "tags": (tags or "") if tags_in_form else (state.values or {}).get("tags", ""),
     }
     values = {name: submitted[name] for name in fields}
+    # 有標籤欄位 → 完整一組（空字串 = 移除全部）；沒有 → None，不處理標籤（見 _has_tags_field）
+    tag_text = (tags or "") if tags_in_form else None
 
     def form_response(**kwargs) -> Response:
         return _form(
@@ -772,9 +835,15 @@ def edit_txn(
         return form_response(status_code=422, field_errors=field_errors, form_errors=form_errors)
 
     form = _update_form(db, form_type, data)
+    tag_ids = _tag_ids(db, tag_text)  # 商家之後、寫入之前；None = 這次不處理標籤
     try:
         result = transactions.update_transaction(
-            db, txn_id, form, confirmed=_parse_confirmed(confirmed), user_id=user.id
+            db,
+            txn_id,
+            form,
+            confirmed=_parse_confirmed(confirmed),
+            user_id=user.id,
+            tag_ids=tag_ids,
         )
     except NotFound:
         return _not_found(request, txn_id)

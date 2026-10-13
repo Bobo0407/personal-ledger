@@ -45,3 +45,18 @@ def tags_for_transaction(db: Session, txn_id: int) -> list[Tag]:
         .order_by(Tag.name, Tag.id)
     )
     return list(db.scalars(stmt))
+
+
+def list_all(db: Session, active_only: bool = False) -> list[Tag]:
+    """全部標籤（依名稱、id 排序）。給 service 做正規化比對與 datalist 用（P2 Step 8B）。"""
+    stmt = select(Tag)
+    if active_only:
+        stmt = stmt.where(Tag.is_active.is_(True))
+    return list(db.scalars(stmt.order_by(Tag.name, Tag.id)))
+
+
+def add(db: Session, tag: Tag) -> Tag:
+    """加入 Session，不 commit（commit 由 service 決定）。"""
+    db.add(tag)
+    db.flush()
+    return tag

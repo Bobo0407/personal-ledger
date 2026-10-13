@@ -166,6 +166,7 @@ def test_pagination_links_keep_conditions(client, db):
         "date_from": ["2026-10-01"],
         "date_to": [""],
         "merchant": [""],
+        "tag": [""],
         "min_amount": ["10"],
         "max_amount": [""],
         "page": ["2"],

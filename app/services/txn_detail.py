@@ -28,6 +28,7 @@ from app.models import Merchant, PaymentMethod, Transaction
 from app.models.enums import LineRole, TxnType
 from app.repositories import accounts as account_repo
 from app.repositories import ledger as ledger_repo
+from app.services import tags as tag_service
 from app.services import txn_edit
 from app.services.entry_options import VOUCHER_LABELS
 from app.services.errors import NotFound, RuleViolation
@@ -49,6 +50,12 @@ class PostingLine:
 
 
 @dataclass(frozen=True)
+class TagLabel:
+    name: str
+    is_active: bool
+
+
+@dataclass(frozen=True)
 class RefundLink:
     txn_id: int
     txn_date: date
@@ -63,7 +70,7 @@ class TxnDetail:
     type_label: str
     is_deleted: bool
     deleted_at: datetime | None
-    merchant_name: str | None
+    merchant_name: str | None  # 退款：原交易目前的商家（見 merchant_inherited）
     payment_method_name: str | None
     description: str | None
     voucher_label: str | None
@@ -79,6 +86,12 @@ class TxnDetail:
     refunds: tuple[RefundLink, ...] = ()  # 有效退款
     refundable_amount: int = 0  # 剩餘可退（顯示用）
     refund_blocker: str | None = None  # 不能退款的原因；None 且是支出 → 顯示「退款」
+    # 標籤（P2 Step 8B）：交易自己的標籤；退款沒有自己的標籤，另外顯示「沿用原交易」的標籤
+    tags: tuple[TagLabel, ...] = ()
+    inherited_tags: tuple[TagLabel, ...] = ()  # 退款：原交易目前的標籤（只是顯示，不寫入）
+    # 退款的商家顯示原交易目前的商家（和商家搜尋的分類一致，P2 Step 8B）；
+    # 退款自己存的 merchant_id 是建立當下的紀錄，不改寫、不顯示
+    merchant_inherited: bool = False
 
 
 def _get(db: Session, txn_id: int) -> Transaction:
@@ -185,9 +198,20 @@ def refund_state(db: Session, txn_id: int) -> RefundState:
     )
 
 
+def _display_merchant(db: Session, txn: Transaction) -> tuple[Merchant | None, bool]:
+    """(要顯示的商家, 是否沿用原交易)。退款用原交易目前的商家，和搜尋分類同一個來源。"""
+    if txn.txn_type == TxnType.REFUND and txn.related_txn_id is not None:
+        original = db.get(Transaction, txn.related_txn_id)
+        if original is not None:
+            mid = original.merchant_id
+            return (db.get(Merchant, mid) if mid is not None else None), True
+    merchant = db.get(Merchant, txn.merchant_id) if txn.merchant_id is not None else None
+    return merchant, False
+
+
 def get_detail(db: Session, txn_id: int) -> TxnDetail:
     txn = _get(db, txn_id)
-    merchant = db.get(Merchant, txn.merchant_id) if txn.merchant_id is not None else None
+    merchant, merchant_inherited = _display_merchant(db, txn)
     pm = db.get(PaymentMethod, txn.payment_method_id) if txn.payment_method_id else None
     refunded, refundable, refund_blocker = _refund_info(db, txn)
     refunds = (
@@ -224,6 +248,19 @@ def get_detail(db: Session, txn_id: int) -> TxnDetail:
         refunds=refunds,
         refundable_amount=refundable,
         refund_blocker=refund_blocker,
+        tags=_tag_labels(db, txn.id),
+        merchant_inherited=merchant_inherited,
+        inherited_tags=(
+            _tag_labels(db, txn.related_txn_id)
+            if txn.txn_type == TxnType.REFUND and txn.related_txn_id is not None
+            else ()
+        ),
+    )
+
+
+def _tag_labels(db: Session, txn_id: int) -> tuple[TagLabel, ...]:
+    return tuple(
+        TagLabel(t.name, t.is_active) for t in tag_service.tags_for_transaction(db, txn_id)
     )
 
 

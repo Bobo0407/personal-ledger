@@ -207,6 +207,7 @@ def test_edit_values(seeded_db):
         "interest_amount": "",
         "interest_account_id": "",
         "exclude_from_budget": "",
+        "tags": "",
     }
 
 

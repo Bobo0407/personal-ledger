@@ -30,6 +30,13 @@
         {% for name in merchant_names %}<option value="{{ name }}"></option>{% endfor %}
       </datalist>
 
+      <label for="tag">標籤</label>
+      <input id="tag" name="tag" type="text" list="tag-options" autocomplete="off"
+             value="{{ values.tag }}">
+      <datalist id="tag-options">
+        {% for name in tag_names %}<option value="{{ name }}"></option>{% endfor %}
+      </datalist>
+
       <div class="date-range">
         <div class="stack">
           <label for="min_amount">最低金額</label>
@@ -93,6 +100,8 @@
 
   {% elif result.merchant_not_found %}
   <p class="empty">找不到商家「{{ values.merchant }}」。</p>
+  {% elif result.tag_not_found %}
+  <p class="empty" data-empty="tag">找不到標籤「{{ values.tag }}」。</p>
   {% elif is_default %}
   <p class="empty">本月還沒有交易。<a href="/txn/new">記一筆</a></p>
   {% else %}

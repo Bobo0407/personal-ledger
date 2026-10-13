@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Merchant, PaymentMethod, Transaction
 from app.models.enums import LineRole, TxnStatus, TxnType
+from app.services import tags as tag_service
 from app.services.drafts import EntryDraft
 from app.services.entries import (
     CardPaymentEntry,
@@ -249,4 +250,6 @@ def edit_values(db: Session, txn: Transaction) -> dict[str, str]:
             "fee_account_id": _text(form.fee_account_id),
         }
     values["description"] = txn.description or ""
+    # P2 Step 8B：目前的標籤（含已停用；原樣送回時視為沒動，P1 允許保留）
+    values["tags"] = tag_service.text_for_transaction(db, txn.id)
     return values

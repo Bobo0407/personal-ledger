@@ -54,6 +54,7 @@ def test_income_prefill(seeded_db):
         "account_id": str(acc(seeded_db, "4201")),
         "receive_account_id": str(acc(seeded_db, "1102")),
         "description": "利息",
+        "tags": "",
     }
 
 
@@ -67,6 +68,7 @@ def test_transfer_prefill_with_and_without_fee(seeded_db):
         "fee_amount": "",
         "fee_account_id": "",
         "description": "",
+        "tags": "",
     }
     with_fee = txn_detail.edit_values(seeded_db, fee_transfer(seeded_db))
     assert (with_fee["amount"], with_fee["fee_amount"]) == ("5000", "15")

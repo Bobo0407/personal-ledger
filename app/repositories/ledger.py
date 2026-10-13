@@ -19,10 +19,10 @@ find_by_source_ref() 只用於送出權杖去重；兩者都不是帳務加總�
 from collections.abc import Iterable
 from datetime import date
 
-from sqlalchemy import Select, Subquery, case, exists, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import ColumnElement, Select, Subquery, case, exists, func, select
+from sqlalchemy.orm import Session, aliased
 
-from app.models import Account, Merchant, Posting, Transaction
+from app.models import Account, Merchant, Posting, Transaction, TransactionTag
 from app.models.enums import AccountClass, LineRole, TxnStatus, TxnType
 
 
@@ -237,6 +237,35 @@ def _active_transactions() -> Subquery:
     )
 
 
+def _classification_owner() -> ColumnElement:
+    """分類維度（商家、標籤）看的是哪一筆交易（P2 Step 8B）。
+
+    退款沒有自己的分類：它是原交易的沖回，商家與標籤一律跟著原交易「目前」的值
+    （查詢時判斷，不寫入退款）。其他交易看自己。日期、金額、排序仍然看交易自己。
+    """
+    return case(
+        (Transaction.txn_type == TxnType.REFUND.value, Transaction.related_txn_id),
+        else_=Transaction.id,
+    )
+
+
+def _merchant_scope(merchant_id: int) -> ColumnElement:
+    """商家篩選：非退款看自己的 merchant_id；退款看原交易現在的 merchant_id。
+    退款建立時複製的 merchant_id 是歷史紀錄，不拿來分類（原交易事後可能改商家）。"""
+    owner = aliased(Transaction)
+    return exists().where(owner.id == _classification_owner(), owner.merchant_id == merchant_id)
+
+
+def tag_scope(tag_id: int) -> ColumnElement:
+    """標籤篩選（「標籤範圍」的唯一定義；V1.5 標籤排行、特別預算也要用這個）：
+    交易自己有這個標籤，或是退款而原交易現在有這個標籤。
+    用 EXISTS：一筆交易有幾個標籤都只會是一列，不放大筆數與合計。"""
+    return exists().where(
+        TransactionTag.tag_id == tag_id,
+        TransactionTag.transaction_id.in_([Transaction.id, _classification_owner()]),
+    )
+
+
 def _filtered_transactions(
     *,
     date_from: date | None,
@@ -244,15 +273,21 @@ def _filtered_transactions(
     merchant_id: int | None,
     min_amount: int | None,
     max_amount: int | None,
+    tag_id: int | None = None,
 ) -> Subquery:
-    """依搜尋條件篩選後的有效交易，一筆交易一列：(transaction_id, magnitude)。"""
+    """依搜尋條件篩選後的有效交易，一筆交易一列：(transaction_id, magnitude)。
+
+    商家、標籤是分類維度，退款跟著原交易目前的分類（_classification_owner）；
+    筆數、分頁、合計都只從這個結果取，不在合計層另外判斷退款。"""
     active = _active_transactions()
     stmt = select(active.c.transaction_id, active.c.magnitude).join(
         Transaction, Transaction.id == active.c.transaction_id
     )
     stmt = _date_range(stmt, date_from, date_to)
     if merchant_id is not None:
-        stmt = stmt.where(Transaction.merchant_id == merchant_id)
+        stmt = stmt.where(_merchant_scope(merchant_id))
+    if tag_id is not None:
+        stmt = stmt.where(tag_scope(tag_id))
     if min_amount is not None:
         stmt = stmt.where(active.c.magnitude >= min_amount)
     if max_amount is not None:
@@ -263,12 +298,17 @@ def _filtered_transactions(
 def search_active_transactions(
     db: Session, *, limit: int, offset: int, **filters
 ) -> list[tuple[Transaction, str | None, int]]:
-    """[(交易, 商家名稱或 None, magnitude)]，依 txn_date DESC, id DESC 排序後分頁。"""
+    """[(交易, 商家名稱或 None, magnitude)]，依 txn_date DESC, id DESC 排序後分頁。
+
+    商家名稱和商家篩選用同一個分類來源（_classification_owner）：退款顯示原交易「目前」的商家，
+    所以「搜商家 B」的結果裡，退款列也寫 B（P2 Step 8B）。退款自己存的 merchant_id 不變。"""
     found = _filtered_transactions(**filters)
+    owner = aliased(Transaction)
     stmt = (
         select(Transaction, Merchant.name, found.c.magnitude)
         .join(found, found.c.transaction_id == Transaction.id)
-        .outerjoin(Merchant, Merchant.id == Transaction.merchant_id)
+        .outerjoin(owner, owner.id == _classification_owner())
+        .outerjoin(Merchant, Merchant.id == owner.merchant_id)
         .order_by(Transaction.txn_date.desc(), Transaction.id.desc())
         .limit(limit)
         .offset(offset)

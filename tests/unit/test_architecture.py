@@ -88,10 +88,12 @@ def test_only_ledger_service_writes_transaction_tags():
     writers = [name for name, text in sources().items() if pattern.search(text)]
     assert writers == ["services/ledger.py"]
     users = {name for name, text in sources().items() if "TransactionTag" in text}
+    # repositories/ledger.py 只在搜尋的標籤範圍（tag_scope）裡讀（P2 Step 8B）
     assert users <= {
         "models/tag.py",
         "models/__init__.py",
         "repositories/tags.py",
+        "repositories/ledger.py",
         "services/ledger.py",
     }
 
