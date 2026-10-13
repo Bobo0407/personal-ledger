@@ -18,6 +18,12 @@ P2 Step 5A：/txn/new 的類型切換（支出／收入／轉帳），只有新�
   三種類型都用同一套一次性送出權杖（transactions._post_once）。
 - 轉帳轉入信用卡時由 P1 自動記成繳卡費（D9）；成功訊息讀回實際存下的交易類型。
 
+P2 Step 7：退款（GET/POST /txn/{id}/refund，UF05）
+- 原交易 id 只取自網址；欄位只有日期、退款金額、退回方式（付款方式）、備註。
+- 預填剩餘可退（只是預填，上限由 P1 V07 判斷）；原交易條件、日期由 P1 判斷。
+- 一次性送出權杖同新增；重送時回到「第一次建立的退款」所屬的原交易，不看這次網址的 id。
+- 成功後回到原交易明細（顯示已退、剩餘可退、退款連結）。
+
 P2 Step 6：支出的進階欄位（手續費、分期利息、不計入預算），新增與修改都支援；外幣延後。
 - 帳務（分錄、交易規模、V10、V12、P12、REFUND_LOCKED）全部由 P1 判斷，Web 只傳值。
 - 支出的修改條件改成和 5B 相同的「還原 → builder 重建 → 比對」（txn_edit）。
@@ -71,7 +77,13 @@ from app.deps import require_user
 from app.models import User
 from app.models.enums import TxnType
 from app.schemas.search import parse_page, parse_search
-from app.schemas.txn import FormParseError, parse_expense, parse_income, parse_transfer
+from app.schemas.txn import (
+    FormParseError,
+    parse_expense,
+    parse_income,
+    parse_refund,
+    parse_transfer,
+)
 from app.services import (
     audit_history,
     entry_options,
@@ -164,6 +176,9 @@ SELECT_FIELDS = (
     "fee_account_id",
     "interest_account_id",
 )
+
+# 退款表單（P2 Step 7）
+REFUND_FIELDS = ("txn_date", "amount", "payment_method_id", "description")
 
 # P1 Issue.field 與畫面欄位名稱不同的對應（只是顯示位置，不是規則）：
 # - 商家在畫面上輸入的是名稱
@@ -793,6 +808,168 @@ def edit_txn(
             "HX-Reswap": "innerHTML",
             "HX-Push-Url": f"/txn/{txn_id}",
         },
+    )
+
+
+def _refund_form(
+    request: Request,
+    db: Session,
+    state,
+    values: dict[str, str],
+    *,
+    status_code: int = 200,
+    field_errors: dict[str, list[ErrorItem]] | None = None,
+    form_errors: list[ErrorItem] | None = None,
+    template: str = "partials/txn_refund_form.html",
+) -> Response:
+    """退回方式只列啟用中的付款方式（退款是新交易，停用的付款方式由 P1 V04 擋下）。"""
+    methods, _ = entry_options.payment_method_choices(db)
+    return render(
+        request,
+        template,
+        {
+            "refund": state,
+            "payment_methods": methods,
+            "values": values,
+            "field_errors": field_errors or {},
+            "form_errors": form_errors or [],
+            "saved": None,
+            "form_url": f"/txn/{state.original_id}/refund",
+        },
+        status_code=status_code,
+    )
+
+
+def _after_refund(request: Request, db: Session, refund_id: int, notices, message: str):
+    """回到退款所屬的原交易明細。原交易 id 從實際存下（或重送命中）的退款讀回，不看網址。"""
+    refund = txn_detail.get_detail(db, refund_id)
+    original_id = refund.related_txn_id
+    return _detail(
+        request,
+        db,
+        original_id,
+        notices=notices,
+        done_message=message,
+        htmx_template="partials/txn_detail_main.html",
+        headers={
+            "HX-Retarget": "main.container",
+            "HX-Reswap": "innerHTML",
+            "HX-Push-Url": f"/txn/{original_id}",
+        },
+    )
+
+
+@router.get("/txn/{txn_id:int}/refund")
+def refund_page(
+    request: Request,
+    txn_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_user)],
+) -> Response:
+    try:
+        state = txn_detail.refund_state(db, txn_id)
+    except NotFound:
+        return _not_found(request, txn_id)
+    if state.blocker is not None:
+        # 不能退款：回到明細頁（明細會說明原因）
+        return RedirectResponse(f"/txn/{txn_id}", status_code=303)
+    values = {
+        "txn_date": clock.today().isoformat(),
+        "amount": str(state.remaining),
+        "payment_method_id": _text_id(state.default_payment_method_id),
+        "description": "",
+        TOKEN_FIELD: _new_token(),
+    }
+    return _refund_form(request, db, state, values, template="pages/txn_refund.html")
+
+
+def _text_id(value: int | None) -> str:
+    return "" if value is None else str(value)
+
+
+@router.post("/txn/{txn_id:int}/refund")
+def create_refund(
+    request: Request,
+    txn_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_user)],
+    txn_date: Annotated[str, Form()] = "",
+    amount: Annotated[str, Form()] = "",
+    payment_method_id: Annotated[str, Form()] = "",
+    description: Annotated[str, Form()] = "",
+    submission_token: Annotated[str, Form()] = "",
+    confirmed: Annotated[str, Form()] = "",
+    action: Annotated[str, Form()] = "save",
+) -> Response:
+    try:
+        state = txn_detail.refund_state(db, txn_id)
+    except NotFound:
+        return _not_found(request, txn_id)
+    values = {
+        "txn_date": txn_date,
+        "amount": amount,
+        "payment_method_id": payment_method_id,
+        "description": description,
+        TOKEN_FIELD: submission_token,
+    }
+
+    def form_response(**kwargs) -> Response:
+        return _refund_form(request, db, state, values, **kwargs)
+
+    if action == ACTION_EDIT:
+        return form_response()
+
+    try:
+        data = parse_refund(values)
+    except FormParseError as exc:
+        if TOKEN_FIELD in exc.errors:
+            values[TOKEN_FIELD] = _new_token()
+        field_errors = {f: [(None, m)] for f, m in exc.errors.items() if f in REFUND_FIELDS}
+        form_errors = [(None, m) for f, m in exc.errors.items() if f not in REFUND_FIELDS]
+        return form_response(status_code=422, field_errors=field_errors, form_errors=form_errors)
+
+    # 已用過的權杖：回傳第一次的退款，不驗證、不寫入；回到「那筆退款」的原交易
+    replay = transactions.find_replay(db, data.submission_token)
+    if replay is not None:
+        return _after_refund(
+            request, db, replay.transaction_id, (), "這筆退款已經儲存過，沒有重複建立。"
+        )
+    try:
+        result = transactions.record_refund(
+            db,
+            data.to_form(original_txn_id=txn_id),
+            confirmed=_parse_confirmed(confirmed),
+            user_id=user.id,
+            submission_token=data.submission_token,
+        )
+    except ValidationFailed as exc:
+        field_errors, form_errors = _split_issues(exc.result.errors, REFUND_FIELDS)
+        return form_response(status_code=422, field_errors=field_errors, form_errors=form_errors)
+    except ConfirmationRequired as exc:
+        codes = dict.fromkeys((*_parse_confirmed(confirmed), *(i.code for i in exc.pending)))
+        return render(
+            request,
+            "partials/txn_confirm.html",
+            {
+                "values": values,
+                "pending": exc.pending,
+                "confirmed": ",".join(codes),
+                "action": "save",
+                "form_url": f"/txn/{txn_id}/refund",
+            },
+            status_code=409,
+        )
+    if result.replayed:
+        return _after_refund(
+            request, db, result.transaction_id, (), "這筆退款已經儲存過，沒有重複建立。"
+        )
+    refund = txn_detail.get_detail(db, result.transaction_id)
+    return _after_refund(
+        request,
+        db,
+        result.transaction_id,
+        result.notices,
+        f"已退款 {refund.magnitude:,} 元。",
     )
 
 

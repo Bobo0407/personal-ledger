@@ -12,6 +12,11 @@
 4A 只開放快速記帳格式的支出；5B 加入收入、轉帳、繳卡費；Step 6 支出改用同一個做法，
 開放手續費、分期利息、不計入預算（外幣仍不開放）。
 帳務規則（V08、V10–V12、REFUND_LOCKED……）仍全部由 P1 負責。
+
+退款（P2 Step 7）：明細顯示已退、剩餘可退與有效退款連結；refund_state() 給退款頁預填。
+「剩餘可退」＝原交易 MAIN 金額 − 有效退款 MAIN 合計（和 V07 用同一個 repository 查詢），
+只用來顯示與預填，不是驗證來源；退款上限、日期、原交易限制都由 P1（V07、REFUND_DATE、
+REFUND_ORIGINAL）判斷。
 """
 
 from dataclasses import dataclass
@@ -28,6 +33,7 @@ from app.services.entry_options import VOUCHER_LABELS
 from app.services.errors import NotFound, RuleViolation
 from app.services.ledger_queries import NORMAL_SIGN
 from app.services.search import TXN_TYPE_LABELS
+from app.services.validation import main_posting, refund_original
 
 NOT_EDITABLE = "NOT_EDITABLE"
 
@@ -40,6 +46,13 @@ class PostingLine:
     effect: str  # 「增加」或「減少」（依科目正常餘額方向）
     amount: int  # 絕對值
     role_label: str | None  # 手續費、分期利息；MAIN 與一般分錄不另外標示
+
+
+@dataclass(frozen=True)
+class RefundLink:
+    txn_id: int
+    txn_date: date
+    amount: int  # 正數
 
 
 @dataclass(frozen=True)
@@ -62,6 +75,10 @@ class TxnDetail:
     edit_blockers: tuple[str, ...]  # 空 = 可以用表單修改
     delete_blockers: tuple[str, ...]  # 空 = 可以刪除（已刪除的交易不適用）
     exclude_from_budget: bool = False  # 不計入預算（表頭旗標；P2 Step 6 在明細顯示）
+    # 退款（P2 Step 7，只有支出有值）
+    refunds: tuple[RefundLink, ...] = ()  # 有效退款
+    refundable_amount: int = 0  # 剩餘可退（顯示用）
+    refund_blocker: str | None = None  # 不能退款的原因；None 且是支出 → 顯示「退款」
 
 
 def _get(db: Session, txn_id: int) -> Transaction:
@@ -115,12 +132,71 @@ def edit_state(db: Session, txn_id: int) -> EditState:
     return EditState(txn.txn_type, None, txn_edit.edit_values(db, txn))
 
 
+def _refund_info(db: Session, txn: Transaction) -> tuple[int, int, str | None]:
+    """(已退, 剩餘可退, 不能退款的原因)。原交易條件沿用 P1 的 refund_original()（只拿來顯示）。"""
+    if txn.txn_type != TxnType.EXPENSE:
+        return 0, 0, "只能對支出交易退款"
+    refunded = ledger_repo.active_refunded_amount(db, txn.id)
+    main = main_posting(txn.postings)
+    remaining = (main.amount - refunded) if main is not None else 0
+    original, issues = refund_original(db, txn.id)
+    if original is None:
+        return refunded, max(remaining, 0), issues[0].message
+    if main is None:
+        return refunded, 0, "這筆支出沒有主要費用分錄，無法退款"
+    if remaining <= 0:
+        return refunded, 0, "已全額退款"
+    return refunded, remaining, None
+
+
+@dataclass(frozen=True)
+class RefundState:
+    """退款頁（GET/POST /txn/{id}/refund）需要的原交易摘要與預填值。"""
+
+    original_id: int
+    txn_date: date
+    account_name: str
+    merchant_name: str | None
+    main_amount: int
+    refunded: int
+    remaining: int
+    default_payment_method_id: int | None  # 原交易的付款方式，只有仍啟用時才預選
+    blocker: str | None  # 不能退款的原因（只用來導回明細；POST 仍交給 P1 判斷）
+
+
+def refund_state(db: Session, txn_id: int) -> RefundState:
+    """找不到 → NotFound。"""
+    txn = _get(db, txn_id)
+    refunded, remaining, blocker = _refund_info(db, txn)
+    main = main_posting(txn.postings)
+    account = account_repo.get(db, main.account_id) if main is not None else None
+    merchant = db.get(Merchant, txn.merchant_id) if txn.merchant_id is not None else None
+    pm = db.get(PaymentMethod, txn.payment_method_id) if txn.payment_method_id else None
+    return RefundState(
+        original_id=txn.id,
+        txn_date=date.fromisoformat(txn.txn_date),
+        account_name=account.name if account is not None else "",
+        merchant_name=merchant.name if merchant is not None else None,
+        main_amount=main.amount if main is not None else 0,
+        refunded=refunded,
+        remaining=remaining,
+        default_payment_method_id=pm.id if pm is not None and pm.is_active else None,
+        blocker=blocker,
+    )
+
+
 def get_detail(db: Session, txn_id: int) -> TxnDetail:
     txn = _get(db, txn_id)
     merchant = db.get(Merchant, txn.merchant_id) if txn.merchant_id is not None else None
     pm = db.get(PaymentMethod, txn.payment_method_id) if txn.payment_method_id else None
-    refunded = (
-        ledger_repo.active_refunded_amount(db, txn.id) if txn.txn_type == TxnType.EXPENSE else 0
+    refunded, refundable, refund_blocker = _refund_info(db, txn)
+    refunds = (
+        tuple(
+            RefundLink(rid, date.fromisoformat(day), amount)
+            for rid, day, amount in ledger_repo.active_refunds(db, txn.id)
+        )
+        if txn.txn_type == TxnType.EXPENSE
+        else ()
     )
     is_deleted = txn.deleted_at is not None
     delete_blockers: tuple[str, ...] = ()
@@ -145,6 +221,9 @@ def get_detail(db: Session, txn_id: int) -> TxnDetail:
         edit_blockers=edit_blockers(db, txn),
         exclude_from_budget=txn.exclude_from_budget,
         delete_blockers=delete_blockers,
+        refunds=refunds,
+        refundable_amount=refundable,
+        refund_blocker=refund_blocker,
     )
 
 

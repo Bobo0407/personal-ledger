@@ -100,6 +100,17 @@ def active_refunded_amount(db: Session, original_id: int, exclude_txn_id: int | 
     return -int(db.scalar(stmt) or 0)
 
 
+def active_refunds(db: Session, original_id: int) -> list[tuple[int, str, int]]:
+    """原交易的有效退款 [(退款交易 id, 日期, 退款金額（正數）), ...]，依日期、id 排序。
+    只給明細顯示用（P2 Step 7）；和 active_refunded_amount 同一個查詢條件。"""
+    stmt = (
+        _active_refund_mains(original_id, None)
+        .with_only_columns(Transaction.id, Transaction.txn_date, Posting.amount)
+        .order_by(Transaction.txn_date, Transaction.id)
+    )
+    return [(txn_id, day, -amount) for txn_id, day, amount in db.execute(stmt)]
+
+
 def earliest_active_refund_date(db: Session, original_id: int) -> str | None:
     stmt = _active_refund_mains(original_id, None).with_only_columns(func.min(Transaction.txn_date))
     return db.scalar(stmt)

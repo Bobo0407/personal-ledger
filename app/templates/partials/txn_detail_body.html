@@ -36,9 +36,19 @@
   {% if detail.voucher_label %}<dt>憑證</dt><dd>{{ detail.voucher_label }}</dd>{% endif %}
   {% if detail.invoice_no %}<dt>發票號碼</dt><dd>{{ detail.invoice_no }}</dd>{% endif %}
   {% if detail.exclude_from_budget %}<dt>不計入預算</dt><dd data-flag="exclude-from-budget">是</dd>{% endif %}
-  {% if detail.refunded_amount %}<dt>已退款</dt><dd class="num">{{ "{:,}".format(detail.refunded_amount) }}</dd>{% endif %}
+  {% if detail.refunded_amount %}<dt>已退款</dt><dd class="num" data-refunded="{{ detail.refunded_amount }}">{{ "{:,}".format(detail.refunded_amount) }}</dd>{% endif %}
+  {% if detail.txn_type == "EXPENSE" and not detail.is_deleted %}<dt>剩餘可退</dt><dd class="num" data-remaining="{{ detail.refundable_amount }}">{{ "{:,}".format(detail.refundable_amount) }}</dd>{% endif %}
   {% if detail.related_txn_id %}<dt>原交易</dt><dd><a href="/txn/{{ detail.related_txn_id }}">查看原交易</a></dd>{% endif %}
 </dl>
+
+{% if detail.refunds %}
+<h2 class="section-title">退款</h2>
+<ul class="refund-links">
+  {% for r in detail.refunds %}
+  <li><a href="/txn/{{ r.txn_id }}" data-refund-id="{{ r.txn_id }}">{{ r.txn_date.isoformat() }} 退款 {{ "{:,}".format(r.amount) }} 元</a></li>
+  {% endfor %}
+</ul>
+{% endif %}
 
 <h2 class="section-title">分錄</h2>
 <ul class="posting-lines">
@@ -63,6 +73,11 @@
     {% for reason in detail.edit_blockers %}<p class="muted" data-blocker="edit">{{ reason }}</p>{% endfor %}
     {% else %}
     <a id="link-edit" class="button-link primary" href="/txn/{{ detail.id }}/edit">修改</a>
+    {% endif %}
+
+    {% if detail.txn_type == "EXPENSE" %}
+    {% if detail.refund_blocker %}<p class="muted" data-blocker="refund">{{ detail.refund_blocker }}</p>
+    {% else %}<a id="link-refund" class="button-link" href="/txn/{{ detail.id }}/refund">退款</a>{% endif %}
     {% endif %}
 
     {% if detail.delete_blockers %}

@@ -33,9 +33,20 @@
 {{ errors(name) }}
 {% endmacro %}
 
-{% macro date_input() %}
+{% macro payment_method_select(label, methods, placeholder) %}
+<label for="payment_method_id">{{ label }}</label>
+<select id="payment_method_id" name="payment_method_id"{{ invalid("payment_method_id") }}>
+  <option value="">{{ placeholder }}</option>
+  {% for pm in methods %}
+  <option value="{{ pm.id }}"{% if values.get("payment_method_id") == pm.id|string %} selected{% endif %}>{{ pm.name }}</option>
+  {% endfor %}
+</select>
+{{ errors("payment_method_id") }}
+{% endmacro %}
+
+{% macro date_input(min=None) %}
 <label for="txn_date">日期</label>
-<input id="txn_date" name="txn_date" type="date" value="{{ values.get('txn_date', '') }}"{{ invalid("txn_date") }}>
+<input id="txn_date" name="txn_date" type="date" value="{{ values.get('txn_date', '') }}"{% if min %} min="{{ min }}"{% endif %}{{ invalid("txn_date") }}>
 {{ errors("txn_date") }}
 {% endmacro %}
 

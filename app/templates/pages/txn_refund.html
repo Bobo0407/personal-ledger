@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}退款｜記帳{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>退款</h1>
+  <a href="/txn/{{ refund.original_id }}">回明細</a>
+</div>
+{# 原交易摘要：剩餘可退只供參考與預填，退款上限由 P1（V07）判斷 #}
+<dl class="detail refund-summary">
+  <dt>原交易</dt><dd>{{ refund.txn_date.isoformat() }} {{ refund.account_name }}{% if refund.merchant_name %}・{{ refund.merchant_name }}{% endif %}</dd>
+  <dt>原金額</dt><dd class="num">{{ "{:,}".format(refund.main_amount) }}</dd>
+  <dt>已退款</dt><dd class="num" data-refunded="{{ refund.refunded }}">{{ "{:,}".format(refund.refunded) }}</dd>
+  <dt>剩餘可退</dt><dd class="num" data-remaining="{{ refund.remaining }}">{{ "{:,}".format(refund.remaining) }}</dd>
+</dl>
+<p class="muted">只沖回原支出科目；手續費、分期利息不會退回。</p>
+<div id="txn-area">
+  {% include "partials/txn_refund_form.html" %}
+</div>
+{% endblock %}

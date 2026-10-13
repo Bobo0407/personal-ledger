@@ -298,9 +298,21 @@ def record_payroll(
 
 
 def record_refund(
-    db: Session, form: RefundForm, *, confirmed: Iterable[str] = (), user_id: int | None = None
+    db: Session,
+    form: RefundForm,
+    *,
+    confirmed: Iterable[str] = (),
+    user_id: int | None = None,
+    submission_token: str | None = None,
 ) -> PostResult:
-    return ledger.post(db, _draft_refund(db, form), confirmed=confirmed, user_id=user_id)
+    """退款。submission_token 同 record_expense（P2 Step 7 接上同一套 _post_once）。"""
+    return _post_once(
+        db,
+        lambda: _draft_refund(db, form),
+        confirmed=confirmed,
+        user_id=user_id,
+        submission_token=submission_token,
+    )
 
 
 # --- 修改、刪除、還原（Step 6）---------------------------------------------------------

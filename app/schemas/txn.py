@@ -22,7 +22,7 @@ from typing import Annotated
 from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError
 
 from app.models.enums import VoucherType
-from app.services.entries import ExpenseForm, IncomeForm, TransferForm
+from app.services.entries import ExpenseForm, IncomeForm, RefundForm, TransferForm
 
 _INT = re.compile(r"[+-]?[0-9]+")
 _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -268,6 +268,33 @@ def parse_transfer(
 ) -> TransferInput | TransferEditInput:
     """require_submission_token=True（預設）給新增使用；只有修改才傳 False。"""
     return _validate(TransferInput if require_submission_token else TransferEditInput, raw)
+
+
+class RefundInput(BaseModel):
+    """退款（POST /txn/{id}/refund，P2 Step 7，UF05）：一次性送出權杖必填。
+    原交易 id 只取自網址，表單送來的 original_txn_id 一律忽略；支出科目、商家、
+    不計入預算由 P1 從原交易帶入（U7），不開放。不支援原幣（U12）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    txn_date: OptionalDate = None
+    amount: OptionalInt = None
+    payment_method_id: OptionalInt = None
+    description: OptionalText = None
+    submission_token: Annotated[str, BeforeValidator(_parse_token)]
+
+    def to_form(self, original_txn_id: int) -> RefundForm:
+        return RefundForm(
+            original_txn_id=original_txn_id,
+            txn_date=self.txn_date,
+            amount=self.amount,
+            payment_method_id=self.payment_method_id,
+            description=self.description,
+        )
+
+
+def parse_refund(raw: dict[str, str]) -> RefundInput:
+    return _validate(RefundInput, raw)
 
 
 def _validate(model, raw: dict[str, str]):

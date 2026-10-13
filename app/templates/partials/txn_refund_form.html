@@ -1,0 +1,20 @@
+{# 退款表單（P2 Step 7，UF05）：日期、退款金額、退回方式（付款方式）、備註。
+   支出科目、商家、不計入預算由 P1 從原交易帶入；原交易 id 只取自網址。
+   日期的 min 只是提示，退款日期規則（REFUND_DATE）與上限（V07）由 P1 判斷。 #}
+{% import "partials/_fields.html" as f with context %}
+{% include "partials/_txn_form_head.html" %}
+
+<form method="post" action="{{ form_url }}" class="stack" novalidate
+      hx-post="{{ form_url }}" hx-target="#txn-area" hx-swap="innerHTML"
+      hx-disabled-elt="#btn-refund">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="submission_token" value="{{ values.submission_token }}">
+  {{ f.amount_input(label="退款金額") }}
+  {{ f.payment_method_select("退回方式", payment_methods, "請選擇退回方式") }}
+  {{ f.date_input(min=refund.txn_date.isoformat()) }}
+  {{ f.description_input() }}
+  <div class="actions">
+    <button id="btn-refund" type="submit" name="action" value="save">確認退款</button>
+    <a class="button-link" href="/txn/{{ refund.original_id }}">取消</a>
+  </div>
+</form>
