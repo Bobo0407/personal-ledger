@@ -5,6 +5,10 @@
 - amount 帶正負號：借方為正、貸方為負，單位為新台幣元。
 - postings 的順序就是寫入後的 line_no（由 LedgerService 從 1 開始編號）。
 - 沒有 status：P1 一律寫入 POSTED（DRAFT 的確認入帳在 V1.5）。
+- tag_ids（P2 Step 8A、ADR-007）：交易表頭層級的標籤，不是分錄、不影響借貸。
+  Builder 不知道標籤，由 transactions 用 replace() 補上（和 source_ref 相同）。
+  None = 這次不處理標籤（新增時就是沒有標籤；修改時保留原本的標籤）；
+  () = 沒有標籤／移除全部；非空 tuple = 整組替換。由 transactions 去重並排序。
 """
 
 from dataclasses import dataclass
@@ -37,6 +41,7 @@ class EntryDraft:
     related_txn_id: int | None = None
     source: str = TxnSource.MANUAL.value
     source_ref: str | None = None
+    tag_ids: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -54,9 +59,10 @@ class ExistingTransaction:
     related_txn_id: int | None
     invoice_no: str | None
     postings: tuple[PostingDraft, ...]
+    tag_ids: tuple[int, ...] = ()  # 修改前的標籤（由呼叫端在修改前從資料庫查好傳入）
 
     @classmethod
-    def from_model(cls, txn) -> "ExistingTransaction":
+    def from_model(cls, txn, tag_ids: tuple[int, ...] = ()) -> "ExistingTransaction":
         return cls(
             id=txn.id,
             txn_type=txn.txn_type,
@@ -67,6 +73,7 @@ class ExistingTransaction:
             related_txn_id=txn.related_txn_id,
             invoice_no=txn.invoice_no,
             postings=tuple(posting_draft_of(p) for p in txn.postings),
+            tag_ids=tuple(tag_ids),
         )
 
 

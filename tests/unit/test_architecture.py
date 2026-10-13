@@ -78,6 +78,24 @@ def test_only_ledger_service_creates_postings():
     assert offenders == ["services/ledger.py"]
 
 
+def test_only_ledger_service_writes_transaction_tags():
+    """P2 Step 8A、ADR-007：transaction_tags 只由 LedgerService 寫入（新增或刪除關聯）。
+    其他地方最多只能 import 來讀（repositories/tags.py）或定義（models）。"""
+    pattern = re.compile(
+        r"(?<!class )\bTransactionTag\(|TransactionTag\.__table__"
+        r"|(insert|delete|update)\(\s*TransactionTag\b"
+    )
+    writers = [name for name, text in sources().items() if pattern.search(text)]
+    assert writers == ["services/ledger.py"]
+    users = {name for name, text in sources().items() if "TransactionTag" in text}
+    assert users <= {
+        "models/tag.py",
+        "models/__init__.py",
+        "repositories/tags.py",
+        "services/ledger.py",
+    }
+
+
 def test_only_ledger_service_creates_transactions_and_changes_deleted_at():
     created, deleted_at = set(), set()
     for name, tree in trees().items():

@@ -154,6 +154,16 @@ def _draft_refund(db: Session, form: RefundForm) -> EntryDraft:
 SUBMISSION_PREFIX = "submit:"
 
 
+def _tag_ids(tag_ids: Iterable[int] | None) -> tuple[int, ...] | None:
+    """標籤 id 去重、排序（P2 Step 8A）。None 保持 None（不處理標籤）。"""
+    return None if tag_ids is None else tuple(sorted(set(tag_ids)))
+
+
+def _with_tags(draft: EntryDraft, tag_ids: Iterable[int] | None) -> EntryDraft:
+    """把標籤補進草稿（builder 不知道標籤，和 source_ref 相同的做法）。"""
+    return replace(draft, tag_ids=_tag_ids(tag_ids))
+
+
 def submission_ref(token: str) -> str:
     """Web 一次性送出權杖 → transactions.source_ref（source = MANUAL；P2 Step 2 決策 A）。"""
     return f"{SUBMISSION_PREFIX}{token}"
@@ -216,11 +226,12 @@ def record_expense(
     confirmed: Iterable[str] = (),
     user_id: int | None = None,
     submission_token: str | None = None,
+    tag_ids: Iterable[int] | None = None,
 ) -> PostResult:
-    """submission_token 的行為見 _post_once()。"""
+    """submission_token 的行為見 _post_once()；tag_ids 見 drafts.EntryDraft。"""
     return _post_once(
         db,
-        lambda: _draft_expense(db, form),
+        lambda: _with_tags(_draft_expense(db, form), tag_ids),
         confirmed=confirmed,
         user_id=user_id,
         submission_token=submission_token,
@@ -234,11 +245,12 @@ def record_income(
     confirmed: Iterable[str] = (),
     user_id: int | None = None,
     submission_token: str | None = None,
+    tag_ids: Iterable[int] | None = None,
 ) -> PostResult:
-    """submission_token 的行為見 _post_once()。"""
+    """submission_token 的行為見 _post_once()；tag_ids 見 drafts.EntryDraft。"""
     return _post_once(
         db,
-        lambda: _draft_income(db, form),
+        lambda: _with_tags(_draft_income(db, form), tag_ids),
         confirmed=confirmed,
         user_id=user_id,
         submission_token=submission_token,
@@ -252,12 +264,13 @@ def record_transfer(
     confirmed: Iterable[str] = (),
     user_id: int | None = None,
     submission_token: str | None = None,
+    tag_ids: Iterable[int] | None = None,
 ) -> PostResult:
     """帳戶間轉帳。轉入帳戶是信用卡時自動改成信用卡繳款（D9）；
     繳卡費同樣帶著這個送出權杖寫入。submission_token 的行為見 _post_once()。"""
     return _post_once(
         db,
-        lambda: _draft_transfer(db, form),
+        lambda: _with_tags(_draft_transfer(db, form), tag_ids),
         confirmed=confirmed,
         user_id=user_id,
         submission_token=submission_token,
@@ -335,9 +348,12 @@ def update_transaction(
     *,
     confirmed: Iterable[str] = (),
     user_id: int | None = None,
+    tag_ids: Iterable[int] | None = None,
 ) -> PostResult:
     """用表單修改既有交易。表單類型決定交易類型；與原交易不同時由 ledger.update
-    回報 TXN_TYPE_IMMUTABLE（U1）。ManualForm 依原交易決定是 MANUAL 還是 PAYROLL。"""
+    回報 TXN_TYPE_IMMUTABLE（U1）。
+    tag_ids（P2 Step 8A）：None = 保留原本的標籤；() = 移除全部；其他 = 整組替換。
+    ManualForm 依原交易決定是 MANUAL 還是 PAYROLL。"""
     if isinstance(form, ManualForm):
         txn = db.get(Transaction, txn_id)
         if txn is None:
@@ -346,6 +362,7 @@ def update_transaction(
         draft = builder.build(form)
     else:
         draft = _DRAFTERS[type(form)](db, form)
+    draft = _with_tags(draft, tag_ids)
     return ledger.update(db, txn_id, draft, confirmed=confirmed, user_id=user_id)
 
 

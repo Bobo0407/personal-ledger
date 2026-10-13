@@ -10,6 +10,7 @@ from app.models.merchant_alias import MerchantAlias
 from app.models.payment_method import PaymentMethod
 from app.models.posting import Posting
 from app.models.setting import Setting
+from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.models.user_session import UserSession
@@ -25,7 +26,9 @@ __all__ = [
     "PaymentMethod",
     "Posting",
     "Setting",
+    "Tag",
     "Transaction",
+    "TransactionTag",
     "User",
     "UserSession",
 ]

@@ -31,9 +31,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import clock
-from app.models import Account, Posting, Transaction
+from app.models import Account, Posting, Transaction, TransactionTag
 from app.models.enums import AuditAction, TxnStatus, TxnType
 from app.repositories import ledger as ledger_repo
+from app.repositories import tags as tag_repo
 from app.services import audit
 from app.services.drafts import EntryDraft, ExistingTransaction, PostingDraft
 from app.services.errors import NotFound
@@ -69,7 +70,10 @@ def _ensure_clean(db: Session) -> None:
 
 
 def transaction_snapshot(db: Session, txn: Transaction) -> dict[str, Any]:
-    """稽核紀錄用的交易快照：表頭欄位 + 每筆分錄。"""
+    """稽核紀錄用的交易快照：表頭欄位 + 每筆分錄 + 標籤 id。
+
+    tag_ids（P2 Step 8A）用查詢讀資料庫目前的 transaction_tags（Transaction 沒有標籤
+    relationship，不會讀到過期的 ORM 集合）；呼叫端要在寫入標籤後先 flush 再取快照。"""
     ids = {p.account_id for p in txn.postings}
     codes = dict(db.execute(select(Account.id, Account.code).where(Account.id.in_(ids))).all())
     return {
@@ -87,6 +91,7 @@ def transaction_snapshot(db: Session, txn: Transaction) -> dict[str, Any]:
         "source": txn.source,
         "source_ref": txn.source_ref,
         "deleted_at": txn.deleted_at,
+        "tag_ids": list(tag_repo.ids_for_transaction(db, txn.id)),
         "postings": [
             {
                 "line_no": p.line_no,
@@ -149,6 +154,26 @@ def _new_postings(postings: tuple[PostingDraft, ...]) -> list[Posting]:
     ]
 
 
+def _write_tags(db: Session, txn_id: int, tag_ids: tuple[int, ...] | None) -> None:
+    """寫入或整組替換交易的標籤（P2 Step 8A、ADR-007）。只有 LedgerService 呼叫。
+
+    None：不碰現有關聯。() 或非空：整組替換。只刪掉不再需要的、只新增原本沒有的，
+    同一個 (transaction_id, tag_id) 不會在同一次 flush 裡先刪後加。最後明確 flush，
+    讓接下來的稽核快照讀到資料庫的真實狀態。"""
+    if tag_ids is None:
+        return
+    wanted = set(tag_ids)
+    current = tag_repo.links_for_transaction(db, txn_id)
+    for link in current:
+        if link.tag_id not in wanted:
+            db.delete(link)
+    existing = {link.tag_id for link in current}
+    db.add_all(
+        TransactionTag(transaction_id=txn_id, tag_id=tag_id) for tag_id in sorted(wanted - existing)
+    )
+    db.flush()
+
+
 def _get(db: Session, txn_id: int) -> Transaction:
     txn = db.get(Transaction, txn_id)
     if txn is None:
@@ -187,6 +212,8 @@ def post(
         txn.postings = _new_postings(draft.postings)
         db.add(txn)
         db.flush()
+        # 規格 7.4：transactions、postings → transaction_tags → audit_logs → 提交
+        _write_tags(db, txn.id, draft.tag_ids)
         audit.record(
             db,
             entity=AUDIT_ENTITY,
@@ -223,7 +250,8 @@ def update(
     if draft.txn_type != txn.txn_type:
         raise _fail("TXN_TYPE_IMMUTABLE", "交易類型不能修改；請刪除後重新記一筆")
 
-    existing = ExistingTransaction.from_model(txn)
+    # 修改前就從資料庫取得原本的標籤（驗證「沒動的停用標籤可以保留」要用）
+    existing = ExistingTransaction.from_model(txn, tag_repo.ids_for_transaction(db, txn.id))
     result = validate(db, draft, existing)
     _raise_for(result, confirmed)
 
@@ -242,6 +270,7 @@ def update(
         db.flush()
         txn.postings.extend(_new_postings(draft.postings))
         db.flush()
+        _write_tags(db, txn.id, draft.tag_ids)
         audit.record(
             db,
             entity=AUDIT_ENTITY,

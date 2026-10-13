@@ -70,6 +70,7 @@ from app.models.enums import (
 )
 from app.repositories import accounts as account_repo
 from app.repositories import ledger as ledger_repo
+from app.repositories import tags as tag_repo
 from app.services.drafts import EntryDraft, ExistingTransaction, PostingDraft, draft_from_model
 from app.services.issues import Issue
 from app.services.ledger_queries import raw_balance
@@ -242,7 +243,25 @@ def _check_header(
             out.errors.append(Issue("V05", "找不到商家", field="merchant_id"))
         elif merchant_changed and not merchant.is_active:
             out.errors.append(Issue("V04", f"「{merchant.name}」已停用", field="merchant_id"))
+    _check_tags(db, draft, out, existing)
     _check_invoice(db, draft, out, existing.id if existing is not None else None)
+
+
+def _check_tags(
+    db: Session, draft: EntryDraft, out: _Collector, existing: ExistingTransaction | None
+) -> None:
+    """標籤（P2 Step 8A）：找不到 → V05；新加上的停用標籤 → V04。
+    原本就有、這次沒動的停用標籤可以保留（D14 的精神，和商家相同）。None = 不處理標籤。"""
+    if draft.tag_ids is None:
+        return
+    found = tag_repo.get_many(db, draft.tag_ids)
+    kept = set(existing.tag_ids) if existing is not None else set()
+    for tag_id in draft.tag_ids:
+        tag = found.get(tag_id)
+        if tag is None:
+            out.errors.append(Issue("V05", f"找不到標籤 #{tag_id}", field="tag_ids"))
+        elif not tag.is_active and tag_id not in kept:
+            out.errors.append(Issue("V04", f"標籤「{tag.name}」已停用", field="tag_ids"))
 
 
 def invoice_taken_issue(owner: Transaction) -> Issue:

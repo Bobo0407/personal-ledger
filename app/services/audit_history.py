@@ -11,6 +11,8 @@
   - 「怎麼寫成人話」另外判斷：科目、金額、分錄角色有變 → 「分錄：前 → 後」（科目代碼 + 名稱 +
     增加／減少 + 金額）；只有 memo、原幣這類內容變了 → 「分錄內容已變更」。
   - 其他表頭欄位若有不同（正常流程不會發生），也不會被當成「內容沒有變更」。
+  - 標籤（P2 Step 8A）：「標籤：A、B → A、C」，用現在的名稱，查不到顯示 #id；
+    前後快照都有 tag_ids 才比較（8A 之前的舊紀錄沒有這個 key，視為未知，不比較）。
 - 金額 = 交易規模（正數分錄加總），與列表、明細同一個定義；增加／減少依 NORMAL_SIGN。
 - 名稱用「現在」的主資料（快照只存 id 與科目代碼）：科目改名後舊紀錄也顯示新名稱，
   但一律保留快照裡的科目代碼；查不到時退回代碼或 #id（P2 Step 4B 決策）。
@@ -28,6 +30,7 @@ from app.models import Merchant, PaymentMethod
 from app.models.enums import AuditAction, LineRole
 from app.repositories import accounts as account_repo
 from app.repositories import audit as audit_repo
+from app.repositories import tags as tag_repo
 from app.services.entry_options import VOUCHER_LABELS
 from app.services.ledger import AUDIT_ENTITY
 from app.services.ledger_queries import NORMAL_SIGN
@@ -51,7 +54,7 @@ _SUMMARIZED = (
     "invoice_no",
     "exclude_from_budget",
 )
-_IGNORED = {"id", "postings"}
+_IGNORED = {"id", "postings", "tag_ids"}  # tag_ids 另外比較（P2 Step 8A）
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,21 @@ class _Names:
             return NOTHING
         m = self._get("merchant", merchant_id, lambda k: self.db.get(Merchant, k))
         return m.name if m is not None else f"#{merchant_id}"
+
+    def tags(self, tag_ids: list[int]) -> str:
+        """標籤用現在的名稱（同科目、商家）；查不到顯示 #id。"""
+        if not tag_ids:
+            return NOTHING
+        missing = [t for t in tag_ids if ("tag", t) not in self._cache]
+        if missing:
+            found = tag_repo.get_many(self.db, missing)
+            for t in missing:
+                self._cache[("tag", t)] = found.get(t)
+        labels = []
+        for t in tag_ids:
+            tag = self._cache[("tag", t)]
+            labels.append(tag.name if tag is not None else f"#{t}")
+        return "、".join(labels)
 
     def payment_method(self, pm_id: int | None) -> str:
         if pm_id is None:
@@ -180,6 +198,13 @@ def update_changes(names: _Names, before: dict[str, Any], after: dict[str, Any])
             )
         else:
             changes.append("分錄內容已變更")
+
+    # 標籤（P2 Step 8A）：只有前後兩份快照都有 tag_ids 才比較。
+    # 舊紀錄沒有這個 key 代表「未知」，不是空集合，不能誤報「標籤：（無）→ A」。
+    if "tag_ids" in before and "tag_ids" in after:
+        old_tags, new_tags = sorted(before["tag_ids"]), sorted(after["tag_ids"])
+        if old_tags != new_tags:
+            changes.append(f"標籤：{names.tags(old_tags)} → {names.tags(new_tags)}")
 
     others = (set(before) | set(after)) - _IGNORED - set(_SUMMARIZED)
     if any(before.get(k) != after.get(k) for k in sorted(others)):
