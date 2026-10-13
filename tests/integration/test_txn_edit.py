@@ -7,9 +7,9 @@
 import pytest
 from sqlalchemy import select
 
-from app.models import AuditLog, Merchant, Posting, Transaction
+from app.models import AuditLog, Merchant, PaymentMethod, Posting, Transaction
 from app.services import audit, ledger, transactions, txn_detail, txn_edit
-from app.services.entries import IncomeForm, TransferForm
+from app.services.entries import ExpenseForm, IncomeForm, RefundForm, TransferForm
 from app.services.errors import RuleViolation
 from app.services.validation import ValidationFailed
 from tests.ledger_helpers import TODAY, acc, freeze_today, insert_raw_transaction
@@ -191,4 +191,114 @@ def test_rollback_when_audit_fails_on_fee_removal(seeded_db, monkeypatch):
     txn = seeded_db.get(Transaction, txn_id)
     assert ledger.transaction_snapshot(seeded_db, txn) == before
     assert len(txn.postings) == 3
+    assert seeded_db.query(AuditLog).count() == logs
+
+
+# --- P2 Step 6：支出（還原 → ExpenseEntry 重建 → 比對） -------------------------------------
+
+
+def pm_id(db, name="LINE Pay") -> int:
+    return db.scalar(select(PaymentMethod.id).where(PaymentMethod.name == name))
+
+
+def expense(db, **kwargs) -> int:
+    base = {"txn_date": TODAY, "amount": 1000, "account_id": acc(db, "5301")}
+    base["payment_method_id"] = pm_id(db, kwargs.pop("pm", "LINE Pay"))
+    form = ExpenseForm(**{**base, **kwargs})
+    return transactions.record_expense(db, form, confirmed=["V10"]).transaction_id
+
+
+def test_expense_with_duplicate_fee_postings_is_not_editable(seeded_db):
+    txn_id = expense(seeded_db, fee_amount=15, fee_account_id=acc(seeded_db, "5502"))
+    txn = seeded_db.get(Transaction, txn_id)
+    payment = next(p for p in txn.postings if p.line_role is None)
+    payment.amount -= 10
+    txn.postings.append(
+        Posting(line_no=9, account_id=acc(seeded_db, "5501"), amount=10, line_role="FEE")
+    )
+    seeded_db.commit()
+    assert blockers(seeded_db, txn_id) == (txn_edit.NOT_REBUILDABLE,)
+
+
+def test_payment_method_remapped_is_safely_not_editable(seeded_db):
+    """付款方式後來改了扣款帳戶：用現在的對應重建出的付款分錄和歷史不同 → 不開放修改，
+    不改寫歷史分錄（已知取捨，見 docs/decisions/p2.md Step 6）。"""
+    txn_id = expense(seeded_db, pm="台灣Pay")
+    assert blockers(seeded_db, txn_id) == ()
+    seeded_db.get(PaymentMethod, pm_id(seeded_db, "台灣Pay")).account_id = acc(seeded_db, "1103")
+    seeded_db.commit()
+    assert blockers(seeded_db, txn_id) == (txn_edit.NOT_REBUILDABLE,)
+
+
+def test_expense_with_related_txn_is_not_editable(seeded_db):
+    other = expense(seeded_db)
+    txn_id = expense(seeded_db)
+    seeded_db.get(Transaction, txn_id).related_txn_id = other
+    seeded_db.commit()
+    assert blockers(seeded_db, txn_id) == (txn_edit.EXPENSE_WITH_RELATED,)
+
+
+def refunded_expense(db) -> int:
+    txn_id = expense(db, fee_amount=15, fee_account_id=acc(db, "5502"))
+    transactions.record_refund(db, RefundForm(txn_id, TODAY, 300, pm_id(db)))
+    return txn_id
+
+
+def test_refund_locks_exclude_from_budget_toggle(seeded_db):
+    txn_id = refunded_expense(seeded_db)
+    assert blockers(seeded_db, txn_id) == ()  # 有退款仍可開啟修改；鎖定由 P1 判斷
+    form = ExpenseForm(
+        TODAY,
+        1000,
+        acc(seeded_db, "5301"),
+        pm_id(seeded_db),
+        fee_amount=15,
+        fee_account_id=acc(seeded_db, "5502"),
+        exclude_from_budget=True,
+    )
+    with pytest.raises(ValidationFailed) as exc:
+        transactions.update_transaction(seeded_db, txn_id, form)
+    assert errors_of(exc) == [("REFUND_LOCKED", "exclude_from_budget")]
+
+
+def test_refund_allows_fee_change_per_p1(seeded_db):
+    """P1（U10、U11）：已有退款時手續費、利息仍可修改。"""
+    txn_id = refunded_expense(seeded_db)
+    form = ExpenseForm(
+        TODAY,
+        1000,
+        acc(seeded_db, "5301"),
+        pm_id(seeded_db),
+        fee_amount=30,
+        fee_account_id=acc(seeded_db, "5502"),
+    )
+    transactions.update_transaction(seeded_db, txn_id, form)
+    fee = next(p for p in seeded_db.get(Transaction, txn_id).postings if p.line_role == "FEE")
+    assert fee.amount == 30
+
+
+def test_rollback_when_audit_fails_on_advanced_expense(seeded_db, monkeypatch):
+    txn_id = expense(
+        seeded_db,
+        pm="聯邦信用卡",
+        fee_amount=15,
+        fee_account_id=acc(seeded_db, "5502"),
+        interest_amount=600,
+        interest_account_id=acc(seeded_db, "5503"),
+        exclude_from_budget=True,
+    )
+    before = ledger.transaction_snapshot(seeded_db, seeded_db.get(Transaction, txn_id))
+    logs = seeded_db.query(AuditLog).count()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("audit failed")
+
+    monkeypatch.setattr(audit, "record", boom)
+    form = ExpenseForm(TODAY, 900, acc(seeded_db, "5301"), pm_id(seeded_db, "聯邦信用卡"))
+    with pytest.raises(RuntimeError):
+        transactions.update_transaction(seeded_db, txn_id, form)
+    seeded_db.expire_all()
+    txn = seeded_db.get(Transaction, txn_id)
+    assert ledger.transaction_snapshot(seeded_db, txn) == before
+    assert len(txn.postings) == 4 and txn.exclude_from_budget is True
     assert seeded_db.query(AuditLog).count() == logs

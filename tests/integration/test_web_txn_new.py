@@ -284,16 +284,11 @@ def test_audit_log_records_logged_in_user(client, db, session_factory):
 
 
 def test_fields_outside_the_form_are_not_saved(client, db, session_factory):
-    submit(
-        client,
-        db,
-        fee_amount=30,
-        fee_account_id=acc(db, "5501"),
-        exclude_from_budget="1",
-    )
+    """手續費、利息、不計入預算在 P2 Step 6 進了表單；外幣（V1.5）仍不在表單上，送來也忽略。"""
+    submit(client, db, original_currency="USD", original_amount_minor="399")
     txn = only_txn(session_factory)
     assert len(txn.postings) == 2
-    assert txn.exclude_from_budget is False
+    assert all(p.original_currency is None for p in txn.postings)
 
 
 # --- 型態解析錯誤（Web 欄位錯誤，沒有規則代碼）-------------------------------------------

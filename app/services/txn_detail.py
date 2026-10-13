@@ -1,4 +1,4 @@
-"""交易明細與「快速記帳格式支出」的修改條件（P2 Step 4A）。
+"""交易明細（P2 Step 4A）與修改條件的入口。
 
 只讀，不寫入。明細要能讀到已刪除的交易（規格 5.4：交易的「已刪除」檢視與還原），
 所以這裡用 id 直接讀一筆交易；這不是帳務加總，不經過 active_postings()。
@@ -7,11 +7,11 @@
 每筆分錄依科目的正常餘額方向（ledger_queries.NORMAL_SIGN）換算成「增加／減少 + 金額」，
 例如「郵局 減少 120」「聯邦信用卡 增加 120」（欠款增加）。template 不判斷正負或科目類別。
 
-修改條件（edit guard）：Web 修改表單只有快速記帳的欄位，拿它修改其他形狀的支出
-會默默刪掉手續費、利息、外幣或改掉「不計入預算」，所以只開放「快速記帳格式」的 EXPENSE。
-這是 4A 唯一新增的判斷；帳務規則（V08、V10–V12、REFUND_LOCKED……）仍全部由 P1 負責。
-P2 Step 5B：收入、轉帳、繳卡費的修改條件與預填值在 services/txn_edit.py
-（還原 → builder 重建 → 比對）。
+修改條件（edit guard）：表單不能完整表示的交易不開放修改，免得儲存時默默丟掉看不到的內容。
+判斷與預填值在 services/txn_edit.py（還原 → builder 重建 → 完整比對）：
+4A 只開放快速記帳格式的支出；5B 加入收入、轉帳、繳卡費；Step 6 支出改用同一個做法，
+開放手續費、分期利息、不計入預算（外幣仍不開放）。
+帳務規則（V08、V10–V12、REFUND_LOCKED……）仍全部由 P1 負責。
 """
 
 from dataclasses import dataclass
@@ -20,7 +20,7 @@ from datetime import date, datetime
 from sqlalchemy.orm import Session
 
 from app.models import Merchant, PaymentMethod, Transaction
-from app.models.enums import LineRole, TxnStatus, TxnType
+from app.models.enums import LineRole, TxnType
 from app.repositories import accounts as account_repo
 from app.repositories import ledger as ledger_repo
 from app.services import txn_edit
@@ -59,8 +59,9 @@ class TxnDetail:
     lines: tuple[PostingLine, ...]
     refunded_amount: int  # EXPENSE：有效退款合計；其他類型為 0
     related_txn_id: int | None  # REFUND：原交易
-    edit_blockers: tuple[str, ...]  # 空 = 可以用快速記帳表單修改
+    edit_blockers: tuple[str, ...]  # 空 = 可以用表單修改
     delete_blockers: tuple[str, ...]  # 空 = 可以刪除（已刪除的交易不適用）
+    exclude_from_budget: bool = False  # 不計入預算（表頭旗標；P2 Step 6 在明細顯示）
 
 
 def _get(db: Session, txn_id: int) -> Transaction:
@@ -81,41 +82,16 @@ def _line(db: Session, posting) -> PostingLine:
     )
 
 
-def edit_blockers(txn: Transaction) -> tuple[str, ...]:
-    """不能用表單修改的原因；空 tuple 代表可以修改。
-    支出：快速記帳格式（4A）；收入、轉帳、繳卡費：txn_edit（5B）；其他類型不提供修改。"""
-    if txn.txn_type != TxnType.EXPENSE:
-        return txn_edit.edit_blockers(txn)
-    if txn.deleted_at is not None:
-        return ("已刪除的交易要先還原才能修改",)
-    if txn.status != TxnStatus.POSTED:
-        return ("草稿交易不提供修改",)
-    reasons = []
-    roles = [p.line_role for p in txn.postings]
-    if LineRole.FEE in roles:
-        reasons.append("含手續費")
-    if LineRole.INTEREST in roles:
-        reasons.append("含分期利息")
-    if any(
-        p.original_currency is not None or p.original_amount_minor is not None for p in txn.postings
-    ):
-        reasons.append("含外幣資料")
-    if txn.exclude_from_budget:
-        reasons.append("設定為不計入預算")
-    quick_entry_shape = (
-        len(roles) == 2 and roles.count(LineRole.MAIN) == 1 and roles.count(None) == 1
-    )
-    if not reasons and not quick_entry_shape:
-        reasons.append("分錄不是快速記帳格式")
-    if reasons:
-        return (f"這筆支出{('、'.join(reasons))}，快速記帳表單無法完整修改",)
-    return ()
+def edit_blockers(db: Session, txn: Transaction) -> tuple[str, ...]:
+    """不能用表單修改的原因；空 tuple 代表可以修改。判斷在 services/txn_edit.py
+    （還原 → builder 重建 → 完整比對；Step 6 起支出也用同一個做法）。"""
+    return txn_edit.edit_blockers(db, txn)
 
 
 def require_editable(db: Session, txn_id: int) -> Transaction:
     """修改前的伺服器端檢查：找不到 → NotFound；不能用表單修改 → RuleViolation（NOT_EDITABLE）。"""
     txn = _get(db, txn_id)
-    reasons = edit_blockers(txn)
+    reasons = edit_blockers(db, txn)
     if reasons:
         raise RuleViolation(NOT_EDITABLE, reasons[0])
     return txn
@@ -133,12 +109,10 @@ class EditState:
 def edit_state(db: Session, txn_id: int) -> EditState:
     """找不到 → NotFound。不能修改時 values 為 None。"""
     txn = _get(db, txn_id)
-    reasons = edit_blockers(txn)
+    reasons = edit_blockers(db, txn)
     if reasons:
         return EditState(txn.txn_type, reasons[0], None)
-    if txn.txn_type == TxnType.EXPENSE:
-        return EditState(txn.txn_type, None, _expense_values(db, txn))
-    return EditState(txn.txn_type, None, txn_edit.edit_values(txn))
+    return EditState(txn.txn_type, None, txn_edit.edit_values(db, txn))
 
 
 def get_detail(db: Session, txn_id: int) -> TxnDetail:
@@ -168,30 +142,12 @@ def get_detail(db: Session, txn_id: int) -> TxnDetail:
         lines=tuple(_line(db, p) for p in txn.postings),
         refunded_amount=refunded,
         related_txn_id=txn.related_txn_id,
-        edit_blockers=edit_blockers(txn),
+        edit_blockers=edit_blockers(db, txn),
+        exclude_from_budget=txn.exclude_from_budget,
         delete_blockers=delete_blockers,
     )
 
 
 def edit_values(db: Session, txn_id: int) -> dict[str, str]:
     """修改表單的預填值；不能修改時丟 RuleViolation（NOT_EDITABLE）。"""
-    txn = require_editable(db, txn_id)
-    if txn.txn_type == TxnType.EXPENSE:
-        return _expense_values(db, txn)
-    return txn_edit.edit_values(txn)
-
-
-def _expense_values(db: Session, txn: Transaction) -> dict[str, str]:
-    """快速記帳格式支出的預填值（4A）。"""
-    main = next(p for p in txn.postings if p.line_role == LineRole.MAIN)
-    merchant = db.get(Merchant, txn.merchant_id) if txn.merchant_id is not None else None
-    return {
-        "txn_date": txn.txn_date,
-        "amount": str(main.amount),
-        "account_id": str(main.account_id),
-        "payment_method_id": "" if txn.payment_method_id is None else str(txn.payment_method_id),
-        "description": txn.description or "",
-        "merchant_name": merchant.name if merchant is not None else "",
-        "voucher_type": txn.voucher_type or "",
-        "invoice_no": txn.invoice_no or "",
-    }
+    return txn_edit.edit_values(db, require_editable(db, txn_id))

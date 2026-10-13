@@ -84,6 +84,48 @@
     </div>
   </details>
 
+  {# 進階（P2 Step 6，UF06、UF07）：手續費、分期利息、不計入預算。預設收合；有值或有錯誤時展開。
+     分期只填總利息（V1 不輸入期數）；分錄與「只能刷信用卡」等規則都由 P1 判斷。 #}
+  {% set adv_fields = ["fee_amount", "fee_account_id", "interest_amount", "interest_account_id", "exclude_from_budget"] %}
+  {% set adv = namespace(open=false) %}
+  {% for name in adv_fields %}{% if values.get(name) or field_errors.get(name) %}{% set adv.open = true %}{% endif %}{% endfor %}
+  <details class="voucher advanced"{% if adv.open %} open{% endif %}>
+    <summary>進階（選填）</summary>
+    <div class="stack">
+      {% for prefix, label, groups in [("fee", "手續費", fee_groups), ("interest", "分期利息", interest_groups)] %}
+      {% set amount_name = prefix ~ "_amount" %}
+      {% set account_name = prefix ~ "_account_id" %}
+      <label for="{{ amount_name }}">{{ label }}{% if prefix == "interest" %}（分期付款才填）{% endif %}</label>
+      <input id="{{ amount_name }}" name="{{ amount_name }}" type="text" inputmode="numeric" autocomplete="off"
+             value="{{ values.get(amount_name, '') }}"
+             {%- if field_errors.get(amount_name) %} aria-invalid="true" aria-describedby="{{ amount_name }}-error"{% endif %}>
+      {% with name = amount_name %}{% include "partials/_field_errors.html" %}{% endwith %}
+
+      <label for="{{ account_name }}">{{ label }}科目</label>
+      <select id="{{ account_name }}" name="{{ account_name }}"
+              {%- if field_errors.get(account_name) %} aria-invalid="true" aria-describedby="{{ account_name }}-error"{% endif %}>
+        <option value="">請選擇{{ label }}科目</option>
+        {% for group_label, accounts in groups %}
+        {% if group_label %}<optgroup label="{{ group_label }}">{% endif %}
+          {% for a in accounts %}
+          <option value="{{ a.id }}"{% if values.get(account_name) == a.id|string %} selected{% endif %}>{{ a.name }}{% if not a.is_active %}（已停用）{% endif %}</option>
+          {% endfor %}
+        {% if group_label %}</optgroup>{% endif %}
+        {% endfor %}
+      </select>
+      {% with name = account_name %}{% include "partials/_field_errors.html" %}{% endwith %}
+      {% endfor %}
+
+      <label class="checkbox" for="exclude_from_budget">
+        <input id="exclude_from_budget" name="exclude_from_budget" type="checkbox" value="1"
+               {%- if values.get("exclude_from_budget") %} checked{% endif %}
+               {%- if field_errors.get("exclude_from_budget") %} aria-invalid="true" aria-describedby="exclude_from_budget-error"{% endif %}>
+        不計入預算
+      </label>
+      {% with name = "exclude_from_budget" %}{% include "partials/_field_errors.html" %}{% endwith %}
+    </div>
+  </details>
+
   <div class="actions">
     {% if is_edit %}
     <button id="btn-save" type="submit" name="action" value="save">儲存修改</button>

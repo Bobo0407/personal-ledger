@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models import Merchant, PaymentMethod, Transaction
-from app.services import transactions, txn_detail
+from app.services import transactions, txn_detail, txn_edit
 from app.services.entries import CardPaymentForm, ExpenseForm, IncomeForm, RefundForm
 from app.services.errors import NotFound, RuleViolation
 from tests.ledger_helpers import TODAY, acc, freeze_today, insert_raw_transaction
@@ -124,33 +124,34 @@ def blockers(db, txn_id) -> tuple[str, ...]:
     return txn_detail.get_detail(db, txn_id).edit_blockers
 
 
-@pytest.mark.parametrize(
-    ("extra", "reason"),
-    [
-        ({"fee_amount": 15, "fee_account_id": "5501"}, "含手續費"),
-        ({"original_currency": "USD", "original_amount_minor": 399}, "含外幣資料"),
-        ({"exclude_from_budget": True}, "設定為不計入預算"),
-    ],
-)
-def test_non_quick_entry_expense_is_not_editable(seeded_db, extra, reason):
-    if "fee_account_id" in extra:
-        extra = {**extra, "fee_account_id": acc(seeded_db, extra["fee_account_id"])}
-    txn_id = record(seeded_db, quick(seeded_db, **extra))
-    assert len(blockers(seeded_db, txn_id)) == 1
-    assert reason in blockers(seeded_db, txn_id)[0]
+def test_foreign_currency_expense_is_not_editable(seeded_db):
+    """外幣延後到 V1.5：表單沒有外幣欄位，有原幣的支出不開放修改（P2 Step 6）。"""
+    txn_id = record(seeded_db, quick(seeded_db, original_currency="USD", original_amount_minor=399))
+    assert blockers(seeded_db, txn_id) == (txn_edit.FOREIGN_CURRENCY,)
     with pytest.raises(RuleViolation) as exc:
         txn_detail.require_editable(seeded_db, txn_id)
     assert exc.value.code == "NOT_EDITABLE"
 
 
-def test_installment_interest_is_not_editable(seeded_db):
+def test_advanced_expense_is_editable(seeded_db):
+    """P2 Step 6：手續費、分期利息、不計入預算都在表單上，可以完整修改。"""
     form = quick(
         seeded_db,
         payment_method_id=pm(seeded_db, "聯邦信用卡"),
+        fee_amount=15,
+        fee_account_id=acc(seeded_db, "5502"),
         interest_amount=300,
         interest_account_id=acc(seeded_db, "5503"),
+        exclude_from_budget=True,
     )
-    assert "含分期利息" in blockers(seeded_db, record(seeded_db, form))[0]
+    txn_id = record(seeded_db, form)
+    assert blockers(seeded_db, txn_id) == ()
+    values = txn_detail.edit_values(seeded_db, txn_id)
+    assert (values["fee_amount"], values["fee_account_id"]) == ("15", str(acc(seeded_db, "5502")))
+    assert values["interest_amount"] == "300"
+    assert values["interest_account_id"] == str(acc(seeded_db, "5503"))
+    assert values["exclude_from_budget"] == "1"
+    assert txn_detail.get_detail(seeded_db, txn_id).exclude_from_budget is True
 
 
 def test_other_types_deleted_and_drafts_are_not_editable(seeded_db):
@@ -181,7 +182,7 @@ def test_odd_expense_shape_is_not_editable(seeded_db):
     txn_id = insert_raw_transaction(
         seeded_db, TODAY.isoformat(), ("5101", 50), ("1102", -50), txn_type="EXPENSE"
     )
-    assert "分錄不是快速記帳格式" in blockers(seeded_db, txn_id)[0]
+    assert blockers(seeded_db, txn_id) == (txn_edit.NOT_REBUILDABLE,)
 
 
 def test_edit_values(seeded_db):
@@ -201,6 +202,11 @@ def test_edit_values(seeded_db):
         "merchant_name": "7-11",
         "voucher_type": "RECEIPT",
         "invoice_no": "",
+        "fee_amount": "",
+        "fee_account_id": "",
+        "interest_amount": "",
+        "interest_account_id": "",
+        "exclude_from_budget": "",
     }
 
 

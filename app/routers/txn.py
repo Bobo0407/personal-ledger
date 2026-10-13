@@ -18,6 +18,10 @@ P2 Step 5A：/txn/new 的類型切換（支出／收入／轉帳），只有新�
   三種類型都用同一套一次性送出權杖（transactions._post_once）。
 - 轉帳轉入信用卡時由 P1 自動記成繳卡費（D9）；成功訊息讀回實際存下的交易類型。
 
+P2 Step 6：支出的進階欄位（手續費、分期利息、不計入預算），新增與修改都支援；外幣延後。
+- 帳務（分錄、交易規模、V10、V12、P12、REFUND_LOCKED）全部由 P1 判斷，Web 只傳值。
+- 支出的修改條件改成和 5B 相同的「還原 → builder 重建 → 比對」（txn_edit）。
+
 P2 Step 5B：修改收入、轉帳、繳卡費
 - 表單依「原交易」的類型決定（不信任送來的 txn_type）：收入 → 收入表單；轉帳、繳卡費 → 轉帳表單。
   繳卡費一樣送 TransferForm，D9 由 P1 每次重新判斷；類型變了由 P1 回 TXN_TYPE_IMMUTABLE。
@@ -94,6 +98,12 @@ FORM_FIELDS = (
     "merchant_name",
     "voucher_type",
     "invoice_no",
+    # 進階（P2 Step 6）：手續費、分期利息、不計入預算
+    "fee_amount",
+    "fee_account_id",
+    "interest_amount",
+    "interest_account_id",
+    "exclude_from_budget",
 )
 TOKEN_FIELD = "submission_token"
 
@@ -152,6 +162,7 @@ SELECT_FIELDS = (
     "from_account_id",
     "to_account_id",
     "fee_account_id",
+    "interest_account_id",
 )
 
 # P1 Issue.field 與畫面欄位名稱不同的對應（只是顯示位置，不是規則）：
@@ -213,6 +224,10 @@ def _options(
     methods, default_pm_id = entry_options.payment_method_choices(db, keep.get("payment_method_id"))
     return {
         "account_groups": entry_options.expense_account_groups(db, keep.get("account_id")),
+        "fee_groups": entry_options.expense_account_groups(db, keep.get("fee_account_id")),
+        "interest_groups": entry_options.expense_account_groups(
+            db, keep.get("interest_account_id")
+        ),
         "payment_methods": methods,
         "default_payment_method_id": default_pm_id,
         "merchant_names": entry_options.merchant_names(db),
@@ -373,6 +388,9 @@ def create_txn(
     to_account_id: Annotated[str, Form()] = "",
     fee_amount: Annotated[str, Form()] = "",
     fee_account_id: Annotated[str, Form()] = "",
+    interest_amount: Annotated[str, Form()] = "",
+    interest_account_id: Annotated[str, Form()] = "",
+    exclude_from_budget: Annotated[str, Form()] = "",
     submission_token: Annotated[str, Form()] = "",
     confirmed: Annotated[str, Form()] = "",
     action: Annotated[str, Form()] = ACTION_NEXT,
@@ -401,6 +419,9 @@ def create_txn(
         "to_account_id": to_account_id,
         "fee_amount": fee_amount,
         "fee_account_id": fee_account_id,
+        "interest_amount": interest_amount,
+        "interest_account_id": interest_account_id,
+        "exclude_from_budget": exclude_from_budget,
     }
     fields = TYPE_FIELDS[txn_type]
     values = {name: submitted[name] for name in fields}
@@ -671,6 +692,9 @@ def edit_txn(
     to_account_id: Annotated[str, Form()] = "",
     fee_amount: Annotated[str, Form()] = "",
     fee_account_id: Annotated[str, Form()] = "",
+    interest_amount: Annotated[str, Form()] = "",
+    interest_account_id: Annotated[str, Form()] = "",
+    exclude_from_budget: Annotated[str, Form()] = "",
     confirmed: Annotated[str, Form()] = "",
     action: Annotated[str, Form()] = "save",
 ) -> Response:
@@ -701,6 +725,9 @@ def edit_txn(
         "to_account_id": to_account_id,
         "fee_amount": fee_amount,
         "fee_account_id": fee_account_id,
+        "interest_amount": interest_amount,
+        "interest_account_id": interest_account_id,
+        "exclude_from_budget": exclude_from_budget,
     }
     values = {name: submitted[name] for name in fields}
 

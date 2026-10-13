@@ -61,12 +61,51 @@ def test_zero_and_negative_are_left_to_p1(value):
 
 
 def test_fields_outside_the_form_are_ignored():
+    """外幣（V1.5）與 merchant_id 不開放；送來也忽略。"""
     form = parse_expense(
-        {"amount": "120", "fee_amount": "30", "merchant_id": "1", "exclude_from_budget": "1"}
+        {
+            "amount": "120",
+            "merchant_id": "1",
+            "original_currency": "USD",
+            "original_amount_minor": "399",
+        }
     ).to_form()
-    assert form.fee_amount is None
     assert form.merchant_id is None
-    assert form.exclude_from_budget is False
+    assert (form.original_currency, form.original_amount_minor) == (None, None)
+
+
+def test_advanced_fields_are_parsed():
+    """P2 Step 6：手續費、分期利息、不計入預算。"""
+    form = parse_expense(
+        {
+            "amount": "30000",
+            "fee_amount": "15",
+            "fee_account_id": "7",
+            "interest_amount": "600",
+            "interest_account_id": "8",
+            "exclude_from_budget": "1",
+        }
+    ).to_form()
+    assert (form.fee_amount, form.fee_account_id) == (15, 7)
+    assert (form.interest_amount, form.interest_account_id) == (600, 8)
+    assert form.exclude_from_budget is True
+    blank = parse_expense({"amount": "1", "fee_amount": " ", "exclude_from_budget": ""}).to_form()
+    assert (blank.fee_amount, blank.exclude_from_budget) == (None, False)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("fee_amount", "1.5", "請輸入整數手續費"),
+        ("interest_amount", "abc", "請輸入整數分期利息"),
+        ("interest_account_id", "x", "請重新選擇分期利息科目"),
+        ("exclude_from_budget", "maybe", "請重新勾選「不計入預算」"),
+    ],
+)
+def test_unparseable_advanced_fields(field, value, message):
+    with pytest.raises(FormParseError) as exc:
+        parse_expense({field: value})
+    assert exc.value.errors == {field: message}
 
 
 @pytest.mark.parametrize("value", ["abc", "12.5", "1_000", "１２０", "1e3", "1,200"])

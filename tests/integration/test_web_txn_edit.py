@@ -8,7 +8,6 @@ Web 只多一個「是否為快速記帳格式的支出」的檢查。
 import re
 from datetime import date
 
-import pytest
 from sqlalchemy import func, select
 
 from app.models import AuditLog, Merchant, PaymentMethod, Transaction
@@ -185,18 +184,9 @@ def test_change_payment_method(client, db, session_factory):
 # --- 不能修改的交易 ------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        {"fee_amount": 15, "fee_account_id": "5501"},
-        {"original_currency": "USD", "original_amount_minor": 399},
-        {"exclude_from_budget": True},
-    ],
-)
-def test_non_quick_entry_expense_cannot_be_edited(client, db, session_factory, extra):
-    if "fee_account_id" in extra:
-        extra = {**extra, "fee_account_id": acc(db, extra["fee_account_id"])}
-    txn_id = expense(db, **extra)
+def test_foreign_currency_expense_cannot_be_edited(client, db, session_factory):
+    """手續費、利息、不計入預算在 Step 6 開放修改；外幣（V1.5）仍不開放。"""
+    txn_id = expense(db, original_currency="USD", original_amount_minor=399)
     before = snapshot(session_factory, txn_id)
 
     detail = client.get(f"/txn/{txn_id}").text

@@ -42,6 +42,9 @@ PARSE_MESSAGES = {
     "to_account_id": "請重新選擇轉入帳戶",
     "fee_amount": "請輸入整數手續費",
     "fee_account_id": "請重新選擇手續費科目",
+    "interest_amount": "請輸入整數分期利息",
+    "interest_account_id": "請重新選擇分期利息科目",
+    "exclude_from_budget": "請重新勾選「不計入預算」",
     "submission_token": "表單已失效，請重新整理後再試。",
 }
 
@@ -59,6 +62,21 @@ def _blank(value: object) -> object:
         value = value.strip()
         return value or None
     return value
+
+
+_CHECKED = frozenset({"1", "on", "true"})
+
+
+def _parse_checkbox(value: object) -> object:
+    """HTML checkbox：沒勾選時瀏覽器不送欄位（空字串）；勾選時送 value（"1"）。"""
+    value = _blank(value)
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.lower() in _CHECKED:
+        return True
+    raise ValueError("invalid checkbox value")
 
 
 def _parse_int(value: object) -> object:
@@ -111,7 +129,8 @@ OptionalText = Annotated[str | None, BeforeValidator(_blank)]
 
 
 class _ExpenseFields(BaseModel):
-    """支出表單開放的欄位；其他欄位（手續費、利息、原幣、不計入預算……）一律忽略。"""
+    """支出表單開放的欄位（P2 Step 6 加上進階欄位：手續費、分期利息、不計入預算）。
+    原幣（外幣）不開放（延後到 V1.5 S03）：送來的原幣欄位一律忽略。"""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -123,6 +142,11 @@ class _ExpenseFields(BaseModel):
     merchant_name: OptionalText = None
     voucher_type: Annotated[str | None, BeforeValidator(_parse_voucher_type)] = None
     invoice_no: Annotated[str | None, BeforeValidator(_normalize_invoice_no)] = None
+    fee_amount: OptionalInt = None
+    fee_account_id: OptionalInt = None
+    interest_amount: OptionalInt = None
+    interest_account_id: OptionalInt = None
+    exclude_from_budget: Annotated[bool, BeforeValidator(_parse_checkbox)] = False
 
     def to_form(self, merchant_id: int | None = None) -> ExpenseForm:
         """merchant_id 由呼叫端用 merchant_name 向 services/merchants.py 換得。"""
@@ -135,6 +159,11 @@ class _ExpenseFields(BaseModel):
             merchant_id=merchant_id,
             voucher_type=self.voucher_type,
             invoice_no=self.invoice_no,
+            fee_amount=self.fee_amount,
+            fee_account_id=self.fee_account_id,
+            interest_amount=self.interest_amount,
+            interest_account_id=self.interest_account_id,
+            exclude_from_budget=self.exclude_from_budget,
         )
 
 

@@ -35,6 +35,7 @@
   {% if detail.description %}<dt>備註</dt><dd>{{ detail.description }}</dd>{% endif %}
   {% if detail.voucher_label %}<dt>憑證</dt><dd>{{ detail.voucher_label }}</dd>{% endif %}
   {% if detail.invoice_no %}<dt>發票號碼</dt><dd>{{ detail.invoice_no }}</dd>{% endif %}
+  {% if detail.exclude_from_budget %}<dt>不計入預算</dt><dd data-flag="exclude-from-budget">是</dd>{% endif %}
   {% if detail.refunded_amount %}<dt>已退款</dt><dd class="num">{{ "{:,}".format(detail.refunded_amount) }}</dd>{% endif %}
   {% if detail.related_txn_id %}<dt>原交易</dt><dd><a href="/txn/{{ detail.related_txn_id }}">查看原交易</a></dd>{% endif %}
 </dl>
