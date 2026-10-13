@@ -104,3 +104,15 @@ button:disabled { opacity: 0.6; cursor: wait; }
 .danger-zone { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.5rem 0.75rem; }
 .danger-zone summary { cursor: pointer; color: var(--danger-fg); }
 button.danger { background: var(--danger-fg); }
+
+/* P2 Step 4B 異動紀錄、已刪除列表 */
+.head-links { display: flex; gap: 1rem; white-space: nowrap; }
+.head-links a { color: var(--accent); }
+.history { margin-top: 1.5rem; border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.5rem 0.75rem; }
+.history summary { cursor: pointer; }
+.history-list { list-style: none; margin: 0.5rem 0 0; padding: 0; }
+.history-entry { padding: 0.5rem 0; border-top: 1px solid var(--border); }
+.history-head { display: flex; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; }
+.history-label { font-weight: 600; }
+.history-changes { margin: 0.25rem 0 0; padding-left: 1.25rem; font-size: 0.875rem; overflow-wrap: anywhere; }
+.deleted-at { color: var(--danger-fg); }

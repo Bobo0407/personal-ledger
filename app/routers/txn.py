@@ -21,6 +21,10 @@ P2 Step 4A：交易明細、修改（只限快速記帳格式的支出）、軟�
   直接回傳明細內容並顯示提醒（修改用 HX-Retarget 換掉整個 main、HX-Push-Url 改網址）
 - NotFound 只在這個 router 對應成 404，不做全域框架
 
+P2 Step 4B：異動紀錄與已刪除交易（只讀）
+- 明細頁底部顯示 services/audit_history.py 產生的可讀摘要（預設收合）
+- GET /txn/deleted：已刪除交易的唯讀列表，不經過 active_postings()、沒有金額合計
+
 P2 Step 3：GET /txn 交易列表與搜尋（F22、F23、UF10）
 - 條件放在 query string（可書籤、重新整理保留）；完全沒帶條件時預設本月。
 - 條件欄位出現但是空白，代表不限（例如清空日期 = 不限日期）。
@@ -49,7 +53,14 @@ from app.deps import require_user
 from app.models import User
 from app.schemas.search import parse_page, parse_search
 from app.schemas.txn import FormParseError, parse_expense
-from app.services import entry_options, merchants, search, transactions, txn_detail
+from app.services import (
+    audit_history,
+    entry_options,
+    merchants,
+    search,
+    transactions,
+    txn_detail,
+)
 from app.services.errors import NotFound, RuleViolation
 from app.services.issues import Issue
 from app.services.validation import ConfirmationRequired, ValidationFailed
@@ -387,6 +398,7 @@ def _detail(
         template,
         {
             "detail": detail,
+            "history": audit_history.history(db, txn_id),
             "form_errors": form_errors or [],
             "notices": notices,
             "done_message": done_message,
@@ -577,3 +589,25 @@ def restore_txn(
         return _detail(request, db, txn_id, status_code=422, form_errors=_lifecycle_errors(exc))
     # 還原表單的 HTMX 目標就是 #txn-detail（網址已經是 /txn/{id}）：直接回傳明細並顯示提醒
     return _detail(request, db, txn_id, notices=result.notices, done_message="已還原。")
+
+
+@router.get("/txn/deleted")
+def deleted_txns(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_user)],
+) -> Response:
+    """已刪除交易的唯讀列表（最近刪除的在前）；每列連到既有的已刪除明細，在那裡還原。"""
+    result = search.deleted_page(db, page=parse_page(request.query_params.get("page")))
+    return render(
+        request,
+        "pages/txn_deleted.html",
+        {
+            "result": result,
+            "today": clock.today(),
+            "prev_url": f"/txn/deleted?page={result.page - 1}" if result.page > 1 else None,
+            "next_url": (
+                f"/txn/deleted?page={result.page + 1}" if result.page < result.page_count else None
+            ),
+        },
+    )

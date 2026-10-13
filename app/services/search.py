@@ -14,7 +14,7 @@
 
 import calendar
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy.orm import Session
 
@@ -116,3 +116,45 @@ def search(db: Session, filters: SearchFilters, page: int = 1) -> Page:
         expense_net=sums.get(AccountClass.EXPENSE.value, 0),
         income_total=-sums.get(AccountClass.INCOME.value, 0),
     )
+
+
+# --- 已刪除交易列表（P2 Step 4B）-----------------------------------------------------------
+# 與上面的有效交易搜尋完全分開：不經過 active_postings()，也沒有任何金額合計。
+
+
+@dataclass(frozen=True)
+class DeletedRow:
+    row: TxnRow  # amount 是該交易自己的 magnitude，僅供顯示
+    deleted_at: datetime
+
+
+@dataclass(frozen=True)
+class DeletedPage:
+    rows: tuple[DeletedRow, ...]
+    total_count: int
+    page: int
+    page_count: int
+
+
+def deleted_page(db: Session, page: int = 1) -> DeletedPage:
+    """已刪除的交易，最近刪除的在前（deleted_at DESC, id DESC），每頁 PAGE_SIZE 筆。"""
+    total = ledger_repo.count_deleted_transactions(db)
+    page_count = max(1, -(-total // PAGE_SIZE))
+    page = min(max(page, 1), page_count)
+    found = ledger_repo.deleted_transactions(db, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
+    rows = tuple(
+        DeletedRow(
+            row=TxnRow(
+                id=txn.id,
+                txn_date=date.fromisoformat(txn.txn_date),
+                txn_type=txn.txn_type,
+                type_label=TXN_TYPE_LABELS.get(txn.txn_type, txn.txn_type),
+                merchant_name=merchant_name,
+                description=txn.description,
+                amount=magnitude,
+            ),
+            deleted_at=datetime.fromisoformat(txn.deleted_at),
+        )
+        for txn, merchant_name, magnitude in found
+    )
+    return DeletedPage(rows=rows, total_count=total, page=page, page_count=page_count)

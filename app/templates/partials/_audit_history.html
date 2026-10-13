@@ -1,0 +1,20 @@
+{# 異動紀錄（P2 Step 4B）。內容全部由 services/audit_history.py 產生，這裡只顯示；
+   不顯示原始快照、不顯示 user_id。預設收合。 #}
+<details class="history">
+  <summary>異動紀錄（{{ history|length }} 筆）</summary>
+  <ol class="history-list">
+    {% for entry in history %}
+    <li class="history-entry" data-action="{{ entry.action }}">
+      <div class="history-head">
+        <span class="history-label">{{ entry.label }}</span>
+        <time class="muted" datetime="{{ entry.occurred_at.isoformat() }}">{{ entry.occurred_at.strftime("%Y-%m-%d %H:%M") }}</time>
+      </div>
+      {% if entry.changes %}
+      <ul class="history-changes">
+        {% for change in entry.changes %}<li>{{ change }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+</details>

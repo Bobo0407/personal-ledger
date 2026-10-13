@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}已刪除的交易｜記帳{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>已刪除的交易</h1>
+  <a href="/txn">交易列表</a>
+</div>
+<p class="muted">已刪除的交易不計入餘額與報表。點進交易可以查看內容或還原。</p>
+
+<p class="txn-summary" data-count="{{ result.total_count }}">共 {{ result.total_count }} 筆</p>
+
+{% if result.rows %}
+<ul class="txn-rows">
+  {% for item in result.rows %}
+  {% set row = item.row %}
+  <li class="txn-row" data-txn-id="{{ row.id }}">
+    <a class="txn-link" href="/txn/{{ row.id }}">
+    <div class="txn-line">
+      <span class="txn-date">{% if row.txn_date.year != today.year %}{{ row.txn_date.year }}/{% endif %}{{ row.txn_date.month }}/{{ row.txn_date.day }}</span>
+      <span class="badge" data-type="{{ row.txn_type }}">{{ row.type_label }}</span>
+      <span class="txn-amount">{{ "{:,}".format(row.amount) }}</span>
+    </div>
+    <div class="txn-text">
+      <span class="deleted-at">刪除於 {{ item.deleted_at.strftime("%Y-%m-%d %H:%M") }}</span>
+      {%- if row.merchant_name %} · <span class="txn-merchant">{{ row.merchant_name }}</span>{% endif %}
+      {%- if row.description %} · {{ row.description }}{% endif -%}
+    </div>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% if result.page_count > 1 %}
+<nav class="pager" aria-label="分頁">
+  {% if prev_url %}<a href="{{ prev_url }}">上一頁</a>{% else %}<span></span>{% endif %}
+  <span class="muted">第 {{ result.page }} / {{ result.page_count }} 頁</span>
+  {% if next_url %}<a href="{{ next_url }}">下一頁</a>{% else %}<span></span>{% endif %}
+</nav>
+{% endif %}
+{% else %}
+<p class="empty">沒有已刪除的交易。</p>
+{% endif %}
+{% endblock %}

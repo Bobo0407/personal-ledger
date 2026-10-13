@@ -80,3 +80,7 @@
     {% endif %}
   {% endif %}
 </div>
+
+{% if history is defined and history %}
+{% include "partials/_audit_history.html" %}
+{% endif %}

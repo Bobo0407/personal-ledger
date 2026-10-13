@@ -285,3 +285,39 @@ def active_class_sums_for_search(db: Session, **filters) -> dict[str, int]:
         .group_by(Account.account_class)
     )
     return {account_class: int(total) for account_class, total in db.execute(stmt).all()}
+
+
+# --- 已刪除交易列表（P2 Step 4B）-----------------------------------------------------------
+#
+# 規格 5.4 的例外：「交易的『已刪除』檢視與還原」可以讀取已刪除交易。
+# 這裡只供已刪除列表逐列顯示，不做跨交易加總，也不得提供給餘額、支出／收入合計、報表、預算。
+
+
+def deleted_transactions(
+    db: Session, *, limit: int, offset: int
+) -> list[tuple[Transaction, str | None, int]]:
+    """[(已刪除的交易, 商家名稱或 None, 該交易自己的 magnitude)]，最近刪除的在前。
+
+    magnitude 只用該交易自己的分錄計算（正數分錄加總），與列表、明細同一個定義，僅供顯示。
+    """
+    positive = case((Posting.amount > 0, Posting.amount), else_=0)
+    own = (
+        select(Posting.transaction_id, func.sum(positive).label("magnitude"))
+        .group_by(Posting.transaction_id)
+        .subquery("own_magnitude")
+    )
+    stmt = (
+        select(Transaction, Merchant.name, func.coalesce(own.c.magnitude, 0))
+        .outerjoin(own, own.c.transaction_id == Transaction.id)
+        .outerjoin(Merchant, Merchant.id == Transaction.merchant_id)
+        .where(Transaction.deleted_at.is_not(None))
+        .order_by(Transaction.deleted_at.desc(), Transaction.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return [(txn, name, int(magnitude)) for txn, name, magnitude in db.execute(stmt).all()]
+
+
+def count_deleted_transactions(db: Session) -> int:
+    stmt = select(func.count()).select_from(Transaction).where(Transaction.deleted_at.is_not(None))
+    return int(db.scalar(stmt) or 0)
