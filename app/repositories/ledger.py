@@ -16,7 +16,7 @@ find_by_source_ref() 只用於送出權杖去重；兩者都不是帳務加總�
 不會因為 postings 的 join 而重複計算交易，也不另外撰寫排除條件。
 """
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import date
 
 from sqlalchemy import ColumnElement, Select, Subquery, case, exists, func, select
@@ -372,3 +372,34 @@ def deleted_transactions(
 def count_deleted_transactions(db: Session) -> int:
     stmt = select(func.count()).select_from(Transaction).where(Transaction.deleted_at.is_not(None))
     return int(db.scalar(stmt) or 0)
+
+
+# --- 連續補記「本次已記」（P2 Step 10）-------------------------------------------------------
+#
+# 依 id 取回指定的幾筆交易（含已刪除的），只供 /txn/new 的「本次已記 N 筆」逐列顯示。
+# 和已刪除列表一樣：不做跨交易加總，不得提供給餘額、支出／收入合計、報表、預算。
+
+
+def transactions_by_ids(
+    db: Session, txn_ids: Collection[int]
+) -> list[tuple[Transaction, str | None, int]]:
+    """[(交易, 商家名稱或 None, 該交易自己的 magnitude)]，id 由大到小（最新建立的在前）。
+
+    magnitude 只用該交易自己的分錄計算（正數分錄加總），與列表、明細同一個定義，僅供顯示。
+    不存在的 id 不會出現在結果裡。
+    """
+    positive = case((Posting.amount > 0, Posting.amount), else_=0)
+    own = (
+        select(Posting.transaction_id, func.sum(positive).label("magnitude"))
+        .where(Posting.transaction_id.in_(txn_ids))
+        .group_by(Posting.transaction_id)
+        .subquery("run_magnitude")
+    )
+    stmt = (
+        select(Transaction, Merchant.name, func.coalesce(own.c.magnitude, 0))
+        .outerjoin(own, own.c.transaction_id == Transaction.id)
+        .outerjoin(Merchant, Merchant.id == Transaction.merchant_id)
+        .where(Transaction.id.in_(txn_ids))
+        .order_by(Transaction.id.desc())
+    )
+    return [(txn, name, int(magnitude)) for txn, name, magnitude in db.execute(stmt).all()]

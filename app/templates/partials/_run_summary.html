@@ -1,0 +1,29 @@
+{# 連續補記「本次已記 N 筆」（P2 Step 10，UF02）：只在建立表單下方顯示。
+   參數：run（services/txn_run.RunSummary 或 None）、today。修改表單不傳 run，所以不會出現。
+   已刪除的交易仍列出（標示「已刪除」，可點進明細還原），N 不因刪除、還原改變。 #}
+{% if mode == "create" and run and run.rows %}
+<section id="txn-run" class="txn-run" aria-labelledby="txn-run-title" data-run-count="{{ run.count }}">
+  <h2 id="txn-run-title">本次已記 {{ run.count }} 筆</h2>
+  <ul class="txn-rows">
+    {% for item in run.rows %}{% set row = item.row %}
+    <li class="txn-row{% if item.is_deleted %} is-deleted{% endif %}" data-txn-id="{{ row.id }}"{% if item.is_deleted %} data-deleted="true"{% endif %}>
+      <a class="txn-link" href="/txn/{{ row.id }}">
+        <div class="txn-line">
+          <span class="txn-date">{% if row.txn_date.year != today.year %}{{ row.txn_date.year }}/{% endif %}{{ row.txn_date.month }}/{{ row.txn_date.day }}</span>
+          <span class="badge" data-type="{{ row.txn_type }}">{{ row.type_label }}</span>
+          {% if item.is_deleted %}<span class="badge" data-state="deleted">已刪除</span>{% endif %}
+          <span class="txn-amount">{{ "{:,}".format(row.amount) }}</span>
+        </div>
+        {% if row.merchant_name or row.description %}
+        <div class="txn-text">
+          {%- if row.merchant_name %}<span class="txn-merchant">{{ row.merchant_name }}</span>{% endif %}
+          {%- if row.merchant_name and row.description %} · {% endif %}
+          {%- if row.description %}{{ row.description }}{% endif -%}
+        </div>
+        {% endif %}
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}

@@ -140,3 +140,9 @@ button.danger { background: var(--danger-fg); }
 .alias-add-row { display: flex; gap: 0.5rem; align-items: stretch; }
 .alias-add-row input { flex: 1; min-width: 0; }
 .alias-add-row button { width: auto; flex: none; margin-top: 0; }
+
+/* P2 Step 10 連續補記：本次已記 */
+.txn-run { margin-top: 1.5rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+.txn-run h2 { font-size: 1rem; margin: 0 0 0.25rem; }
+.txn-row.is-deleted .txn-link { color: var(--muted); }
+.txn-row.is-deleted .txn-amount { text-decoration: line-through; }

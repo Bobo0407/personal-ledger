@@ -66,6 +66,11 @@ P2 Step 2：
 - 憑證類型、發票號碼：V08 由 P1 validation 判斷。
 - 一次性送出權杖（規格 9.3「重複送出」，決策 A）：GET 時產生；422、409、返回修改沿用同一個；
   儲存成功後換新的。同一個權杖再送一次時不會新增交易，回傳第一次建立的那筆。
+
+P2 Step 10：連續補記「本次已記 N 筆」（UF02）
+- 「儲存並記下一筆」成功（含重送）才把 transaction id 加進簽章 Cookie `ledger_run`
+  （app/entry_run.py）；422、409、返回修改都不改它。「儲存並回首頁」成功後清掉它，結束這一輪。
+- 只有建立表單（/txn/new）在下方顯示；顯示的資料每次從資料庫讀（services/txn_run.py）。
 """
 
 import secrets
@@ -78,7 +83,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
-from app import clock
+from app import clock, entry_run
 from app.db import get_db
 from app.deps import require_user
 from app.models import User
@@ -98,6 +103,7 @@ from app.services import (
     search,
     transactions,
     txn_detail,
+    txn_run,
 )
 from app.services import tags as tag_service
 from app.services.errors import NotFound
@@ -303,13 +309,18 @@ def _form(
     txn_type: str = TYPE_EXPENSE,
     edit_type: str | None = None,
     keep: dict[str, int] | None = None,
+    run_ids: tuple[int, ...] | None = None,
 ) -> Response:
-    """txn_id 不是 None 時是修改表單（/txn/{id}/edit，沒有送出權杖）。"""
+    """txn_id 不是 None 時是修改表單（/txn/{id}/edit，沒有送出權杖）。
+
+    建立表單會在下方顯示「本次已記 N 筆」（P2 Step 10）：run_ids 是這次回應要顯示的清單，
+    沒給就讀 Cookie；修改表單不顯示。"""
     return render(
         request,
         template or FORM_TEMPLATES[txn_type],
         {
             **_options(db, txn_type, edit_type=edit_type, keep=keep),
+            **({} if txn_id is not None else _run_context(request, db, run_ids)),
             "values": values,
             "field_errors": field_errors or {},
             "form_errors": form_errors or [],
@@ -323,6 +334,14 @@ def _form(
         },
         status_code=status_code,
     )
+
+
+def _run_context(request: Request, db: Session, run_ids: tuple[int, ...] | None = None) -> dict:
+    """建立表單下方的「本次已記 N 筆」（P2 Step 10）。沒有這一輪時 run 是 None。"""
+    ids = entry_run.read(request) if run_ids is None else run_ids
+    if not ids:
+        return {"run": None}
+    return {"run": txn_run.summarize(db, ids), "today": clock.today()}
 
 
 def _split_issues(
@@ -385,6 +404,7 @@ def new_txn(
             "txn_type_choices": TXN_TYPE_CHOICES,
             "heading": HEADINGS[txn_type],
             "form_template": FORM_TEMPLATES[txn_type],
+            **_run_context(request, db),
         },
     )
 
@@ -551,7 +571,10 @@ def create_txn(
             )
 
     if action == ACTION_HOME:
-        return Response(status_code=200, headers={"HX-Redirect": "/"})
+        # 儲存並回首頁：離開連續補記，結束這一輪（P2 Step 10）
+        home = Response(status_code=200, headers={"HX-Redirect": "/"})
+        entry_run.clear_cookie(home)
+        return home
 
     # 儲存並記下一筆：保留這個類型的「日期 + 錢從哪裡來」，其他欄位清空，並換新的送出權杖
     next_values = _blank_values(txn_type)
@@ -578,7 +601,12 @@ def create_txn(
             "amount": detail.magnitude,
             "notices": result.notices,
         }
-    return _form(request, db, next_values, txn_type=txn_type, saved=saved)
+    # 交易已經寫入（含重送：第一次的那筆）才加入「本次」；集合語意，重送不會多算，
+    # 也能補上第一次回應遺失、Cookie 沒寫到的那筆。422、409、返回修改在上面就已經離開。
+    run_ids = entry_run.include(entry_run.read(request), result.transaction_id)
+    response = _form(request, db, next_values, txn_type=txn_type, saved=saved, run_ids=run_ids)
+    entry_run.set_cookie(response, run_ids, request.app.state.settings)
+    return response
 
 
 # --- GET /txn 交易列表與搜尋（P2 Step 3）---------------------------------------------------
