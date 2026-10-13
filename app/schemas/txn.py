@@ -105,7 +105,7 @@ OptionalDate = Annotated[date | None, BeforeValidator(_parse_date)]
 OptionalText = Annotated[str | None, BeforeValidator(_blank)]
 
 
-class ExpenseInput(BaseModel):
+class _ExpenseFields(BaseModel):
     """支出表單開放的欄位；其他欄位（手續費、利息、原幣、不計入預算……）一律忽略。"""
 
     model_config = ConfigDict(extra="ignore")
@@ -118,7 +118,6 @@ class ExpenseInput(BaseModel):
     merchant_name: OptionalText = None
     voucher_type: Annotated[str | None, BeforeValidator(_parse_voucher_type)] = None
     invoice_no: Annotated[str | None, BeforeValidator(_normalize_invoice_no)] = None
-    submission_token: Annotated[str, BeforeValidator(_parse_token)]
 
     def to_form(self, merchant_id: int | None = None) -> ExpenseForm:
         """merchant_id 由呼叫端用 merchant_name 向 services/merchants.py 換得。"""
@@ -134,10 +133,28 @@ class ExpenseInput(BaseModel):
         )
 
 
-def parse_expense(raw: dict[str, str]) -> ExpenseInput:
-    """把表單原始字串解析成 ExpenseInput；無法解析時丟 FormParseError。"""
+class ExpenseInput(_ExpenseFields):
+    """新增（POST /txn/new）：一次性送出權杖必填（規格 9.3、P2 Step 2 決策 A）。"""
+
+    submission_token: Annotated[str, BeforeValidator(_parse_token)]
+
+
+class ExpenseEditInput(_ExpenseFields):
+    """修改（POST /txn/{id}/edit，P2 Step 4A）：沒有送出權杖；送來的權杖欄位一律忽略。
+    修改不會新增交易，重送同一份修改不會造成重複記帳。"""
+
+
+def parse_expense(
+    raw: dict[str, str], *, require_submission_token: bool = True
+) -> ExpenseInput | ExpenseEditInput:
+    """把表單原始字串解析成支出輸入；無法解析時丟 FormParseError。
+
+    require_submission_token=True（預設）給新增使用，缺少或格式錯誤的權杖 → 表單已失效。
+    只有修改才傳 False。
+    """
+    model = ExpenseInput if require_submission_token else ExpenseEditInput
     try:
-        return ExpenseInput.model_validate(raw)
+        return model.model_validate(raw)
     except ValidationError as exc:
         errors: dict[str, str] = {}
         for error in exc.errors():

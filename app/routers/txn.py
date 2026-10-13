@@ -11,6 +11,16 @@ POST 只支援 HTMX（V1 不要求無 JS 版本），回應一律是 partials/ �
 - 422：表單解析失敗（Web 欄位錯誤）或 P1 ValidationFailed（規格 9.3）
 - 409：P1 ConfirmationRequired，回傳確認畫面；按「仍要儲存」帶 confirmed 重送（規格 9.3、T19）
 
+P2 Step 4A：交易明細、修改（只限快速記帳格式的支出）、軟刪除、還原
+- GET /txn/{id}：明細（含已刪除的交易）；找不到 → 404
+- GET/POST /txn/{id}/edit：txn_detail.require_quick_entry_expense() 先擋下不能用表單修改的交易，
+  再走 transactions.update_transaction()；422／409 與新增相同；成功後回到明細
+- POST /txn/{id}/delete、/restore：transactions.delete_transaction()／restore_transaction()；
+  P1 擋下時回 422 並在明細頁顯示原因；成功後回到明細
+- 修改、還原成功時，P1 會回傳提醒（PostResult.notices，例如 V13）：不導頁，
+  直接回傳明細內容並顯示提醒（修改用 HX-Retarget 換掉整個 main、HX-Push-Url 改網址）
+- NotFound 只在這個 router 對應成 404，不做全域框架
+
 P2 Step 3：GET /txn 交易列表與搜尋（F22、F23、UF10）
 - 條件放在 query string（可書籤、重新整理保留）；完全沒帶條件時預設本月。
 - 條件欄位出現但是空白，代表不限（例如清空日期 = 不限日期）。
@@ -29,6 +39,7 @@ from typing import Annotated
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
@@ -38,7 +49,8 @@ from app.deps import require_user
 from app.models import User
 from app.schemas.search import parse_page, parse_search
 from app.schemas.txn import FormParseError, parse_expense
-from app.services import entry_options, merchants, search, transactions
+from app.services import entry_options, merchants, search, transactions, txn_detail
+from app.services.errors import NotFound, RuleViolation
 from app.services.issues import Issue
 from app.services.validation import ConfirmationRequired, ValidationFailed
 from app.templating import render
@@ -107,16 +119,22 @@ def _form(
     field_errors: dict[str, list[ErrorItem]] | None = None,
     form_errors: list[ErrorItem] | None = None,
     saved: dict | None = None,
+    txn_id: int | None = None,
+    template: str = "partials/txn_form.html",
 ) -> Response:
+    """txn_id 不是 None 時是修改表單（/txn/{id}/edit，沒有送出權杖）。"""
     return render(
         request,
-        "partials/txn_form.html",
+        template,
         {
             **_options(db),
             "values": values,
             "field_errors": field_errors or {},
             "form_errors": form_errors or [],
             "saved": saved,
+            "mode": "edit" if txn_id is not None else "create",
+            "form_url": f"/txn/{txn_id}/edit" if txn_id is not None else "/txn/new",
+            "txn_id": txn_id,
         },
         status_code=status_code,
     )
@@ -328,3 +346,234 @@ def list_txns(
         _page_url(values, result.page + 1) if result.page < result.page_count else None
     )
     return render(request, template, context)
+
+
+# --- 交易明細、修改、刪除、還原（P2 Step 4A）-------------------------------------------------
+
+
+def _redirect(request: Request, url: str) -> Response:
+    """HTMX 請求用 HX-Redirect 整頁導向；一般請求用 303。"""
+    if _is_htmx(request):
+        return Response(status_code=200, headers={"HX-Redirect": url})
+    return RedirectResponse(url, status_code=303)
+
+
+def _not_found(request: Request, txn_id: int) -> Response:
+    if _is_htmx(request):
+        # HTMX 不 swap 404；整頁導向明細網址，由 GET 顯示 404 頁
+        return Response(status_code=404, headers={"HX-Redirect": f"/txn/{txn_id}"})
+    return render(request, "pages/txn_not_found.html", {}, status_code=404)
+
+
+def _detail(
+    request: Request,
+    db: Session,
+    txn_id: int,
+    *,
+    status_code: int = 200,
+    form_errors: list[ErrorItem] | None = None,
+    notices: tuple[Issue, ...] = (),
+    done_message: str | None = None,
+    htmx_template: str = "partials/txn_detail_body.html",
+    headers: dict[str, str] | None = None,
+) -> Response:
+    try:
+        detail = txn_detail.get_detail(db, txn_id)
+    except NotFound:
+        return _not_found(request, txn_id)
+    template = htmx_template if _is_htmx(request) else "pages/txn_detail.html"
+    response = render(
+        request,
+        template,
+        {
+            "detail": detail,
+            "form_errors": form_errors or [],
+            "notices": notices,
+            "done_message": done_message,
+            # 只有「修改成功、換掉整個 main」的 HTMX 回應需要一併換掉頁面標題
+            "replace_title": template == "partials/txn_detail_main.html",
+        },
+        status_code=status_code,
+    )
+    if _is_htmx(request) and headers:
+        response.headers.update(headers)
+    return response
+
+
+@router.get("/txn/{txn_id:int}")
+def show_txn(
+    request: Request,
+    txn_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_user)],
+) -> Response:
+    return _detail(request, db, txn_id)
+
+
+@router.get("/txn/{txn_id:int}/edit")
+def edit_txn_page(
+    request: Request,
+    txn_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_user)],
+) -> Response:
+    try:
+        values = txn_detail.edit_values(db, txn_id)
+    except NotFound:
+        return _not_found(request, txn_id)
+    except RuleViolation:
+        # 不能用快速記帳表單修改：回到明細頁（明細會說明原因）
+        return RedirectResponse(f"/txn/{txn_id}", status_code=303)
+    return _form(request, db, values, txn_id=txn_id, template="pages/txn_edit.html")
+
+
+@router.post("/txn/{txn_id:int}/edit")
+def edit_txn(
+    request: Request,
+    txn_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_user)],
+    txn_date: Annotated[str, Form()] = "",
+    amount: Annotated[str, Form()] = "",
+    account_id: Annotated[str, Form()] = "",
+    payment_method_id: Annotated[str, Form()] = "",
+    description: Annotated[str, Form()] = "",
+    merchant_name: Annotated[str, Form()] = "",
+    voucher_type: Annotated[str, Form()] = "",
+    invoice_no: Annotated[str, Form()] = "",
+    confirmed: Annotated[str, Form()] = "",
+    action: Annotated[str, Form()] = "save",
+) -> Response:
+    values = {
+        "txn_date": txn_date,
+        "amount": amount,
+        "account_id": account_id,
+        "payment_method_id": payment_method_id,
+        "description": description,
+        "merchant_name": merchant_name,
+        "voucher_type": voucher_type,
+        "invoice_no": invoice_no,
+    }
+    # 伺服器端再檢查一次：不是快速記帳格式的支出，直接 POST 也不能修改（不建立商家、不寫入）
+    try:
+        txn_detail.require_quick_entry_expense(db, txn_id)
+    except NotFound:
+        return _not_found(request, txn_id)
+    except RuleViolation as exc:
+        return _form(
+            request,
+            db,
+            values,
+            txn_id=txn_id,
+            status_code=422,
+            form_errors=[(exc.code, exc.message)],
+        )
+
+    if action == ACTION_EDIT:
+        return _form(request, db, values, txn_id=txn_id)
+
+    try:
+        data = parse_expense(values, require_submission_token=False)
+    except FormParseError as exc:
+        field_errors = {f: [(None, msg)] for f, msg in exc.errors.items() if f in FORM_FIELDS}
+        form_errors = [(None, msg) for f, msg in exc.errors.items() if f not in FORM_FIELDS]
+        return _form(
+            request,
+            db,
+            values,
+            txn_id=txn_id,
+            status_code=422,
+            field_errors=field_errors,
+            form_errors=form_errors,
+        )
+
+    merchant_id = None
+    if data.merchant_name is not None:
+        merchant_id = merchants.resolve_or_create(db, data.merchant_name).id
+    form = data.to_form(merchant_id=merchant_id)
+
+    try:
+        result = transactions.update_transaction(
+            db, txn_id, form, confirmed=_parse_confirmed(confirmed), user_id=user.id
+        )
+    except NotFound:
+        return _not_found(request, txn_id)
+    except ValidationFailed as exc:
+        field_errors, form_errors = _split_issues(exc.result.errors)
+        return _form(
+            request,
+            db,
+            values,
+            txn_id=txn_id,
+            status_code=422,
+            field_errors=field_errors,
+            form_errors=form_errors,
+        )
+    except ConfirmationRequired as exc:
+        codes = dict.fromkeys((*_parse_confirmed(confirmed), *(i.code for i in exc.pending)))
+        return render(
+            request,
+            "partials/txn_confirm.html",
+            {
+                "values": values,
+                "pending": exc.pending,
+                "confirmed": ",".join(codes),
+                "action": "save",
+                "form_url": f"/txn/{txn_id}/edit",
+            },
+            status_code=409,
+        )
+    # 修改頁的 HTMX 目標是 #txn-area；改成換掉整個 main 並把網址換成明細，才能顯示提醒
+    return _detail(
+        request,
+        db,
+        txn_id,
+        notices=result.notices,
+        done_message="已儲存修改。",
+        htmx_template="partials/txn_detail_main.html",
+        headers={
+            "HX-Retarget": "main.container",
+            "HX-Reswap": "innerHTML",
+            "HX-Push-Url": f"/txn/{txn_id}",
+        },
+    )
+
+
+def _lifecycle_errors(exc: ValidationFailed) -> list[ErrorItem]:
+    return [(issue.code, issue.message) for issue in exc.result.errors]
+
+
+@router.post("/txn/{txn_id:int}/delete")
+def delete_txn(
+    request: Request,
+    txn_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_user)],
+) -> Response:
+    """軟刪除（只設 deleted_at）。已有有效退款的支出由 P1 回 REFUND_EXISTS。"""
+    try:
+        transactions.delete_transaction(db, txn_id, user_id=user.id)
+    except NotFound:
+        return _not_found(request, txn_id)
+    except ValidationFailed as exc:
+        return _detail(request, db, txn_id, status_code=422, form_errors=_lifecycle_errors(exc))
+    return _redirect(request, f"/txn/{txn_id}")
+
+
+@router.post("/txn/{txn_id:int}/restore")
+def restore_txn(
+    request: Request,
+    txn_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(require_user)],
+) -> Response:
+    """還原：P1 validate_restore() 重新檢查 V02、D12、
+    退款（REFUND_ORIGINAL／REFUND_DATE／V07）、V08；不重跑 V10／V11／V12，所以不需要確認。"""
+    try:
+        result = transactions.restore_transaction(db, txn_id, user_id=user.id)
+    except NotFound:
+        return _not_found(request, txn_id)
+    except ValidationFailed as exc:
+        return _detail(request, db, txn_id, status_code=422, form_errors=_lifecycle_errors(exc))
+    # 還原表單的 HTMX 目標就是 #txn-detail（網址已經是 /txn/{id}）：直接回傳明細並顯示提醒
+    return _detail(request, db, txn_id, notices=result.notices, done_message="已還原。")

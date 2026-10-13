@@ -1,4 +1,7 @@
-{# /txn/new 支出表單。GET 時嵌在 pages/txn_new.html；POST 的 200／422 回應直接回傳這個片段，換掉 #txn-area。 #}
+{# 支出表單。GET 時嵌在 pages/txn_new.html 或 pages/txn_edit.html；POST 的 200／422 回應直接回傳這個片段，換掉 #txn-area。
+   mode："create"（預設，/txn/new，帶一次性送出權杖）或 "edit"（/txn/{id}/edit，沒有權杖）。 #}
+{% set is_edit = mode == "edit" %}
+{% set form_url = form_url or "/txn/new" %}
 {% if saved and saved.replayed %}
 {# 同一個送出權杖再次送出：沒有重複建立（規格 9.3） #}
 <div class="notice notice-ok" role="status" data-txn-id="{{ saved.transaction_id }}" data-replayed="true">
@@ -28,11 +31,13 @@
 </div>
 {% endif %}
 
-<form method="post" action="/txn/new" class="stack" novalidate
-      hx-post="/txn/new" hx-target="#txn-area" hx-swap="innerHTML"
-      hx-disabled-elt="#btn-next, #btn-home">
+<form method="post" action="{{ form_url }}" class="stack" novalidate
+      hx-post="{{ form_url }}" hx-target="#txn-area" hx-swap="innerHTML"
+      hx-disabled-elt="{% if is_edit %}#btn-save{% else %}#btn-next, #btn-home{% endif %}">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {% if not is_edit %}
   <input type="hidden" name="submission_token" value="{{ values.submission_token }}">
+  {% endif %}
 
   <label for="amount">金額</label>
   <input id="amount" name="amount" type="text" inputmode="numeric" autocomplete="off"
@@ -106,7 +111,12 @@
   </details>
 
   <div class="actions">
+    {% if is_edit %}
+    <button id="btn-save" type="submit" name="action" value="save">儲存修改</button>
+    <a class="button-link" href="/txn/{{ txn_id }}">取消</a>
+    {% else %}
     <button id="btn-next" type="submit" name="action" value="next">儲存並記下一筆</button>
     <button id="btn-home" type="submit" name="action" value="home" class="secondary">儲存並回首頁</button>
+    {% endif %}
   </div>
 </form>

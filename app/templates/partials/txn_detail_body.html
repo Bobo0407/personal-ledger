@@ -1,0 +1,82 @@
+{# 交易明細內容。刪除、還原失敗（422）時只回傳這個片段，換掉 #txn-detail。
+   所有數字與「增加／減少」都由 services/txn_detail.py 算好，這裡只顯示。 #}
+<div id="txn-status" aria-live="polite"></div>
+
+{% if done_message %}
+<p class="notice notice-ok" role="status">{{ done_message }}</p>
+{% endif %}
+{# P1 回傳的提醒（例如 V13 負餘額）：異動已經完成，只顯示不阻擋 #}
+{% for notice in notices or [] %}
+<p class="notice notice-warn" data-code="{{ notice.code }}">{{ notice.message }}</p>
+{% endfor %}
+
+{% if detail.is_deleted %}
+<p class="notice notice-warn" data-state="deleted">
+  這筆交易已於 {{ detail.deleted_at.strftime("%Y-%m-%d %H:%M") }} 刪除，不計入餘額與報表。
+</p>
+{% endif %}
+
+{% if form_errors %}
+<div class="alert" role="alert">
+  <ul>
+    {% for code, message in form_errors %}
+    <li{% if code %} data-code="{{ code }}"{% endif %}>{{ message }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<dl class="detail">
+  <dt>日期</dt><dd>{{ detail.txn_date.isoformat() }}</dd>
+  <dt>類型</dt><dd><span class="badge" data-type="{{ detail.txn_type }}">{{ detail.type_label }}</span></dd>
+  <dt>金額</dt><dd class="num">{{ "{:,}".format(detail.magnitude) }}</dd>
+  {% if detail.merchant_name %}<dt>商家</dt><dd>{{ detail.merchant_name }}</dd>{% endif %}
+  {% if detail.payment_method_name %}<dt>付款方式</dt><dd>{{ detail.payment_method_name }}</dd>{% endif %}
+  {% if detail.description %}<dt>備註</dt><dd>{{ detail.description }}</dd>{% endif %}
+  {% if detail.voucher_label %}<dt>憑證</dt><dd>{{ detail.voucher_label }}</dd>{% endif %}
+  {% if detail.invoice_no %}<dt>發票號碼</dt><dd>{{ detail.invoice_no }}</dd>{% endif %}
+  {% if detail.refunded_amount %}<dt>已退款</dt><dd class="num">{{ "{:,}".format(detail.refunded_amount) }}</dd>{% endif %}
+  {% if detail.related_txn_id %}<dt>原交易</dt><dd><a href="/txn/{{ detail.related_txn_id }}">查看原交易</a></dd>{% endif %}
+</dl>
+
+<h2 class="section-title">分錄</h2>
+<ul class="posting-lines">
+  {% for line in detail.lines %}
+  <li class="posting-line">
+    <span class="posting-account">{{ line.account_name }}{% if line.role_label %}<span class="badge">{{ line.role_label }}</span>{% endif %}</span>
+    <span class="posting-effect" data-effect="{{ line.effect }}">{{ line.effect }} {{ "{:,}".format(line.amount) }}</span>
+  </li>
+  {% endfor %}
+</ul>
+
+<div class="detail-actions stack">
+  {% if detail.is_deleted %}
+  <form method="post" action="/txn/{{ detail.id }}/restore"
+        hx-post="/txn/{{ detail.id }}/restore" hx-target="#txn-detail" hx-swap="innerHTML"
+        hx-disabled-elt="#btn-restore">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button id="btn-restore" type="submit">還原這筆交易</button>
+  </form>
+  {% else %}
+    {% if detail.edit_blockers %}
+    {% for reason in detail.edit_blockers %}<p class="muted" data-blocker="edit">{{ reason }}</p>{% endfor %}
+    {% else %}
+    <a id="link-edit" class="button-link primary" href="/txn/{{ detail.id }}/edit">修改</a>
+    {% endif %}
+
+    {% if detail.delete_blockers %}
+    {% for reason in detail.delete_blockers %}<p class="muted" data-blocker="delete">{{ reason }}</p>{% endfor %}
+    {% else %}
+    <details class="danger-zone">
+      <summary>刪除這筆交易</summary>
+      <p class="muted">刪除後不計入餘額與報表，之後可以在這一頁還原。</p>
+      <form method="post" action="/txn/{{ detail.id }}/delete"
+            hx-post="/txn/{{ detail.id }}/delete" hx-target="#txn-detail" hx-swap="innerHTML"
+            hx-disabled-elt="#btn-delete">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button id="btn-delete" type="submit" class="danger">確定刪除</button>
+      </form>
+    </details>
+    {% endif %}
+  {% endif %}
+</div>

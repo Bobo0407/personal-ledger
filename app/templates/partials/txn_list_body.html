@@ -65,6 +65,7 @@
   <ul class="txn-rows">
     {% for row in result.rows %}
     <li class="txn-row" data-txn-id="{{ row.id }}">
+      <a class="txn-link" href="/txn/{{ row.id }}">
       <div class="txn-line">
         <span class="txn-date">{% if row.txn_date.year != today.year %}{{ row.txn_date.year }}/{% endif %}{{ row.txn_date.month }}/{{ row.txn_date.day }}</span>
         <span class="badge" data-type="{{ row.txn_type }}">{{ row.type_label }}</span>
@@ -77,6 +78,7 @@
         {%- if row.description %}{{ row.description }}{% endif -%}
       </div>
       {% endif %}
+      </a>
     </li>
     {% endfor %}
   </ul>

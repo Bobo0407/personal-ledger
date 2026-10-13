@@ -8,8 +8,9 @@
     {% endfor %}
   </ul>
 
-  <form method="post" action="/txn/new" class="stack"
-        hx-post="/txn/new" hx-target="#txn-area" hx-swap="innerHTML"
+  {% set form_url = form_url or "/txn/new" %}
+  <form method="post" action="{{ form_url }}" class="stack"
+        hx-post="{{ form_url }}" hx-target="#txn-area" hx-swap="innerHTML"
         hx-disabled-elt="#btn-confirm, #btn-edit">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     {% for key, value in values.items() %}

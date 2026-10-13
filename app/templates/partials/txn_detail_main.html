@@ -1,0 +1,11 @@
+{# 明細頁主體（標題列 + #txn-detail）。整頁時由 pages/txn_detail.html 引入；
+   修改成功的 HTMX 回應也回傳這個片段（換掉整個 main，網址改成 /txn/{id}），
+   才能把 P1 回傳的提醒（例如 V13）顯示在明細上。 #}
+{% if replace_title %}<title>交易明細｜記帳</title>{% endif %}
+<div class="page-head">
+  <h1>交易明細</h1>
+  <a href="/txn">交易列表</a>
+</div>
+<div id="txn-detail">
+  {% include "partials/txn_detail_body.html" %}
+</div>
