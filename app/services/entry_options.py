@@ -108,6 +108,6 @@ def voucher_choices() -> list[tuple[str, str]]:
     return [(v.value, VOUCHER_LABELS[v]) for v in VoucherType]
 
 
-def merchant_names(db: Session) -> list[str]:
-    """商家欄位 <datalist> 用：啟用中的商家名稱。"""
-    return merchants.active_names(db)
+def merchant_options(db: Session) -> list[merchants.MerchantOption]:
+    """商家欄位 <datalist> 用：啟用中商家的標準名稱與別名（P2 Step 9）。"""
+    return merchants.suggestions(db)

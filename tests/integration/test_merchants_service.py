@@ -59,7 +59,7 @@ def test_resolve_or_create_leaves_session_clean(seeded_db):
     assert not (seeded_db.new or seeded_db.dirty or seeded_db.deleted)
 
 
-def test_active_names(seeded_db):
+def test_suggestions_only_active_merchants(seeded_db):
     seeded_db.add_all([Merchant(name="全家"), Merchant(name="舊店", is_active=False)])
     seeded_db.commit()
-    assert merchants.active_names(seeded_db) == ["全家"]
+    assert [o.value for o in merchants.suggestions(seeded_db)] == ["全家"]

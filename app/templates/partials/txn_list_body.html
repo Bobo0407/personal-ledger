@@ -27,7 +27,7 @@
       <input id="merchant" name="merchant" type="text" list="merchant-options" autocomplete="off"
              value="{{ values.merchant }}">
       <datalist id="merchant-options">
-        {% for name in merchant_names %}<option value="{{ name }}"></option>{% endfor %}
+        {% for o in merchant_options %}<option value="{{ o.value }}"{% if o.canonical %} label="{{ o.value }} → {{ o.canonical }}"{% endif %}></option>{% endfor %}
       </datalist>
 
       <label for="tag">標籤</label>

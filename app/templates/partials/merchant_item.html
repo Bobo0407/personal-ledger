@@ -1,0 +1,50 @@
+{# 一個商家的區塊。整頁時由 pages/merchants.html 逐一 include；HTMX 新增／刪除別名後只回傳這個區塊（outerHTML）。
+   參數：m（MerchantView）、error_for、error、alias_value、done_message（選填） #}
+{% set has_error = error is not none and error_for == m.id %}
+<li class="merchant-item" id="merchant-{{ m.id }}" data-merchant-id="{{ m.id }}"{% if not m.is_active %} data-inactive{% endif %}>
+  <div class="merchant-head">
+    <h2 class="merchant-name">{{ m.name }}</h2>
+    {% if not m.is_active %}<span class="badge" data-state="inactive">已停用</span>{% endif %}
+  </div>
+  {% if done_message %}<p class="notice notice-ok" role="status">{{ done_message }}</p>{% endif %}
+
+  {% if m.aliases %}
+  <ul class="alias-list">
+    {% for a in m.aliases %}
+    <li class="alias-item" data-alias-id="{{ a.id }}">
+      <details class="alias-delete">
+        <summary><span class="alias-text">{{ a.alias }}</span><span class="alias-action">刪除</span></summary>
+        <p class="muted">刪除後輸入「{{ a.alias }}」不會再對應到「{{ m.name }}」；已經記好的交易不受影響。</p>
+        <form method="post" action="/merchants/{{ m.id }}/aliases/{{ a.id }}/delete"
+              hx-post="/merchants/{{ m.id }}/aliases/{{ a.id }}/delete"
+              hx-target="#merchant-{{ m.id }}" hx-swap="outerHTML"
+              hx-disabled-elt="find button">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="danger">確定刪除別名</button>
+        </form>
+      </details>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">沒有別名</p>
+  {% endif %}
+
+  {% if m.is_active %}
+  <form method="post" action="/merchants/{{ m.id }}/aliases" class="alias-add"
+        hx-post="/merchants/{{ m.id }}/aliases"
+        hx-target="#merchant-{{ m.id }}" hx-swap="outerHTML"
+        hx-disabled-elt="find button">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="alias-add-row">
+      <input id="alias-{{ m.id }}" name="alias" type="text" autocomplete="off" placeholder="新增別名" aria-label="「{{ m.name }}」的新別名"
+             value="{{ alias_value if has_error else '' }}"
+             {%- if has_error %} aria-invalid="true" aria-describedby="alias-{{ m.id }}-error"{% endif %}>
+      <button type="submit" class="secondary">新增</button>
+    </div>
+    {% if has_error %}<p class="field-error" id="alias-{{ m.id }}-error" data-code="{{ error.code }}">{{ error.message }}</p>{% endif %}
+  </form>
+  {% else %}
+  <p class="muted">已停用的商家不能新增別名。</p>
+  {% endif %}
+</li>

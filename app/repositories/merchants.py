@@ -6,11 +6,30 @@ from sqlalchemy.orm import Session
 from app.models import Merchant, MerchantAlias
 
 
-def get_by_alias_normalized(db: Session, alias_normalized: str) -> Merchant | None:
-    alias = db.scalar(
+def get(db: Session, merchant_id: int) -> Merchant | None:
+    return db.get(Merchant, merchant_id)
+
+
+def get_alias_by_normalized(db: Session, alias_normalized: str) -> MerchantAlias | None:
+    return db.scalar(
         select(MerchantAlias).where(MerchantAlias.alias_normalized == alias_normalized)
     )
+
+
+def get_by_alias_normalized(db: Session, alias_normalized: str) -> Merchant | None:
+    alias = get_alias_by_normalized(db, alias_normalized)
     return alias.merchant if alias is not None else None
+
+
+def get_alias(db: Session, alias_id: int) -> MerchantAlias | None:
+    return db.get(MerchantAlias, alias_id)
+
+
+def list_aliases(db: Session) -> list[MerchantAlias]:
+    """全部別名，依商家、建立順序排列（畫面分組用）。"""
+    return list(
+        db.scalars(select(MerchantAlias).order_by(MerchantAlias.merchant_id, MerchantAlias.id))
+    )
 
 
 def list_all(db: Session, active_only: bool = False) -> list[Merchant]:
@@ -22,3 +41,11 @@ def list_all(db: Session, active_only: bool = False) -> list[Merchant]:
 
 def add(db: Session, merchant: Merchant) -> None:
     db.add(merchant)
+
+
+def add_alias(db: Session, alias: MerchantAlias) -> None:
+    db.add(alias)
+
+
+def delete_alias(db: Session, alias: MerchantAlias) -> None:
+    db.delete(alias)

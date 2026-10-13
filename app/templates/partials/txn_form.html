@@ -48,7 +48,7 @@
          value="{{ values.merchant_name }}"
          {%- if field_errors.merchant_name %} aria-invalid="true" aria-describedby="merchant_name-error"{% endif %}>
   <datalist id="merchant-options">
-    {% for name in merchant_names %}<option value="{{ name }}"></option>{% endfor %}
+    {% for o in merchant_options %}<option value="{{ o.value }}"{% if o.canonical %} label="{{ o.value }} → {{ o.canonical }}"{% endif %}></option>{% endfor %}
   </datalist>
   {% with name = "merchant_name" %}{% include "partials/_field_errors.html" %}{% endwith %}
 

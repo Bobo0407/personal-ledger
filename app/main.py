@@ -19,6 +19,7 @@ from app.deps import NotAuthenticated, login_url
 from app.logging_config import setup_logging
 from app.routers import auth as auth_router
 from app.routers import home as home_router
+from app.routers import merchants as merchants_router
 from app.routers import txn as txn_router
 from app.templating import templates
 
@@ -69,6 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(auth_router.router)
     app.include_router(home_router.router)
+    app.include_router(merchants_router.router)
     app.include_router(txn_router.router)
     app.add_exception_handler(NotAuthenticated, _redirect_to_login)
     app.add_exception_handler(Exception, _server_error)

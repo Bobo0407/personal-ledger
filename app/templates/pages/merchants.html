@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}商家｜記帳{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>商家</h1>
+  <a href="/txn">交易列表</a>
+</div>
+<p class="muted">別名讓不同寫法對應到同一個商家：記帳時輸入別名，會記在這個商家名下。新的商家在記帳時輸入名稱就會建立。</p>
+<div id="txn-status" aria-live="polite"></div>
+
+{% if merchants %}
+<ul class="merchant-list">
+  {% for m in merchants %}{% include "partials/merchant_item.html" %}{% endfor %}
+</ul>
+{% else %}
+<p class="empty">還沒有商家。記帳時輸入商家名稱就會建立。</p>
+{% endif %}
+{% endblock %}

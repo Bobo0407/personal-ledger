@@ -268,7 +268,7 @@ def _options(
         ),
         "payment_methods": methods,
         "default_payment_method_id": default_pm_id,
-        "merchant_names": entry_options.merchant_names(db),
+        "merchant_options": entry_options.merchant_options(db),
         "voucher_choices": entry_options.voucher_choices(),
         "tag_names": tag_service.active_names(db),
     }
@@ -614,7 +614,7 @@ def list_txns(
         "values": values,
         "field_errors": {},
         "advanced_open": any(values[key] for key in ADVANCED_SEARCH_FIELDS),
-        "merchant_names": entry_options.merchant_names(db),
+        "merchant_options": entry_options.merchant_options(db),
         "tag_names": tag_service.active_names(db),
         "is_default": is_default,
         "result": None,
