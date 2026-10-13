@@ -106,7 +106,7 @@ def test_deleted_detail_and_refund_links(seeded_db):
     transactions.delete_transaction(seeded_db, refund)
     d = txn_detail.get_detail(seeded_db, refund)
     assert d.is_deleted and d.deleted_at is not None
-    assert d.edit_blockers == ("目前只能修改快速記帳建立的支出",)
+    assert d.edit_blockers == ("這類交易目前不提供修改",)
     assert txn_detail.get_detail(seeded_db, original).delete_blockers == ()
 
 
@@ -114,7 +114,7 @@ def test_not_found(seeded_db):
     with pytest.raises(NotFound):
         txn_detail.get_detail(seeded_db, 999)
     with pytest.raises(NotFound):
-        txn_detail.require_quick_entry_expense(seeded_db, 999)
+        txn_detail.require_editable(seeded_db, 999)
 
 
 # --- 修改條件 ---------------------------------------------------------------------------
@@ -139,7 +139,7 @@ def test_non_quick_entry_expense_is_not_editable(seeded_db, extra, reason):
     assert len(blockers(seeded_db, txn_id)) == 1
     assert reason in blockers(seeded_db, txn_id)[0]
     with pytest.raises(RuleViolation) as exc:
-        txn_detail.require_quick_entry_expense(seeded_db, txn_id)
+        txn_detail.require_editable(seeded_db, txn_id)
     assert exc.value.code == "NOT_EDITABLE"
 
 
@@ -154,10 +154,12 @@ def test_installment_interest_is_not_editable(seeded_db):
 
 
 def test_other_types_deleted_and_drafts_are_not_editable(seeded_db):
-    income = transactions.record_income(
-        seeded_db, IncomeForm(TODAY, 3000, acc(seeded_db, "4201"), acc(seeded_db, "1102"))
+    # 收入、轉帳、繳卡費在 Step 5B 開放修改；退款等其他類型仍不提供
+    original = record(seeded_db, quick(seeded_db, amount=1000))
+    refund = transactions.record_refund(
+        seeded_db, RefundForm(original, TODAY, 600, pm(seeded_db))
     ).transaction_id
-    assert blockers(seeded_db, income) == ("目前只能修改快速記帳建立的支出",)
+    assert blockers(seeded_db, refund) == ("這類交易目前不提供修改",)
 
     deleted = record(seeded_db, quick(seeded_db))
     transactions.delete_transaction(seeded_db, deleted)

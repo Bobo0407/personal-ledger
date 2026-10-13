@@ -1,13 +1,18 @@
-{# 轉帳表單（P2 Step 5A，UF03、UF04）：轉入信用卡時由 P1 自動記成繳卡費（D9），畫面不判斷。
-   轉出帳戶的選項不列信用卡（只是不提供一定會被 P6 擋下的選項，規則仍由 P1 檢查）。 #}
+{# 轉帳表單（P2 Step 5A 新增、5B 修改，UF03、UF04）：轉入信用卡時由 P1 自動記成繳卡費（D9），畫面不判斷。
+   轉出帳戶的選項不列信用卡（只是不提供一定會被 P6 擋下的選項，規則仍由 P1 檢查）。
+   修改繳卡費（card_payment）時：轉入只列信用卡、不顯示手續費（選項過濾，規則仍由 P1 檢查）。 #}
 {% import "partials/_fields.html" as f with context %}
 {% include "partials/_txn_form_head.html" %}
 
-<form method="post" action="/txn/new" class="stack" novalidate
-      hx-post="/txn/new" hx-target="#txn-area" hx-swap="innerHTML"
-      hx-disabled-elt="#btn-next, #btn-home">
-  {{ f.create_hidden("transfer") }}
+<form method="post" action="{{ form_url }}" class="stack" novalidate
+      hx-post="{{ form_url }}" hx-target="#txn-area" hx-swap="innerHTML"
+      hx-disabled-elt="{{ f.disabled_elt() }}">
+  {{ f.form_hidden("transfer") }}
   {{ f.amount_input() }}
+  {% if card_payment %}
+  {{ f.account_select("from_account_id", "扣款帳戶", from_groups, "請選擇扣款帳戶") }}
+  {{ f.account_select("to_account_id", "信用卡", to_groups, "請選擇信用卡") }}
+  {% else %}
   {{ f.account_select("from_account_id", "轉出帳戶", from_groups, "請選擇轉出帳戶") }}
   {{ f.account_select("to_account_id", "轉入帳戶", to_groups, "請選擇轉入帳戶") }}
 
@@ -18,8 +23,9 @@
       {{ f.account_select("fee_account_id", "手續費科目", fee_groups, "請選擇手續費科目") }}
     </div>
   </details>
+  {% endif %}
 
   {{ f.date_input() }}
   {{ f.description_input() }}
-  {{ f.save_buttons() }}
+  {{ f.buttons() }}
 </form>

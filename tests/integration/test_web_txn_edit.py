@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 
 from app.models import AuditLog, Merchant, PaymentMethod, Transaction
 from app.services import audit, transactions
-from app.services.entries import ExpenseForm, IncomeForm, RefundForm
+from app.services.entries import ExpenseForm, RefundForm
 from tests.integration.test_web_txn_new import (  # noqa: F401
     HX,
     TOKEN_INPUT,
@@ -228,12 +228,13 @@ def test_non_quick_entry_expense_cannot_be_edited(client, db, session_factory, e
 
 
 def test_other_types_and_deleted_cannot_be_edited(client, db, session_factory):
-    income = transactions.record_income(
-        db, IncomeForm(TODAY, 3000, acc(db, "4201"), acc(db, "1102"))
+    # 收入、轉帳、繳卡費在 Step 5B 開放修改；退款等其他類型仍不提供
+    refund = transactions.record_refund(
+        db, RefundForm(expense(db, 1000), TODAY, 600, pm(db))
     ).transaction_id
     deleted = expense(db)
     transactions.delete_transaction(db, deleted)
-    for txn_id in (income, deleted):
+    for txn_id in (refund, deleted):
         resp = client.post(
             f"/txn/{txn_id}/edit",
             data={"csrf_token": csrf_from(client, "/txn/new"), "amount": "1"},

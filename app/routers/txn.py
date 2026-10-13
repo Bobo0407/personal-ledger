@@ -18,9 +18,15 @@ P2 Step 5A：/txn/new 的類型切換（支出／收入／轉帳），只有新�
   三種類型都用同一套一次性送出權杖（transactions._post_once）。
 - 轉帳轉入信用卡時由 P1 自動記成繳卡費（D9）；成功訊息讀回實際存下的交易類型。
 
+P2 Step 5B：修改收入、轉帳、繳卡費
+- 表單依「原交易」的類型決定（不信任送來的 txn_type）：收入 → 收入表單；轉帳、繳卡費 → 轉帳表單。
+  繳卡費一樣送 TransferForm，D9 由 P1 每次重新判斷；類型變了由 P1 回 TXN_TYPE_IMMUTABLE。
+- 修改沒有送出權杖；新增的權杖仍必填。
+- 選單的「目前值」已停用時仍列出（標示已停用），其他停用值不列（支出也一起適用）。
+
 P2 Step 4A：交易明細、修改（只限快速記帳格式的支出）、軟刪除、還原
 - GET /txn/{id}：明細（含已刪除的交易）；找不到 → 404
-- GET/POST /txn/{id}/edit：txn_detail.require_quick_entry_expense() 先擋下不能用表單修改的交易，
+- GET/POST /txn/{id}/edit：txn_detail.edit_state() 先擋下不能用表單修改的交易，
   再走 transactions.update_transaction()；422／409 與新增相同；成功後回到明細
 - POST /txn/{id}/delete、/restore：transactions.delete_transaction()／restore_transaction()；
   P1 擋下時回 422 並在明細頁顯示原因；成功後回到明細
@@ -59,6 +65,7 @@ from app import clock
 from app.db import get_db
 from app.deps import require_user
 from app.models import User
+from app.models.enums import TxnType
 from app.schemas.search import parse_page, parse_search
 from app.schemas.txn import FormParseError, parse_expense, parse_income, parse_transfer
 from app.services import (
@@ -69,8 +76,9 @@ from app.services import (
     transactions,
     txn_detail,
 )
-from app.services.errors import NotFound, RuleViolation
+from app.services.errors import NotFound
 from app.services.issues import Issue
+from app.services.txn_detail import NOT_EDITABLE
 from app.services.validation import ConfirmationRequired, ValidationFailed
 from app.templating import render
 
@@ -121,6 +129,31 @@ FORM_TEMPLATES = {
 }
 HEADINGS = {TYPE_EXPENSE: "記一筆支出", TYPE_INCOME: "記一筆收入", TYPE_TRANSFER: "記一筆轉帳"}
 
+# --- /txn/{id}/edit 的表單（P2 Step 5B）：依「原交易」類型決定，不信任送來的欄位 ---
+EDIT_FORM_TYPE = {
+    TxnType.EXPENSE: TYPE_EXPENSE,
+    TxnType.INCOME: TYPE_INCOME,
+    TxnType.TRANSFER: TYPE_TRANSFER,
+    TxnType.CARD_PAYMENT: TYPE_TRANSFER,  # 畫面上是「轉入信用卡的轉帳」
+}
+EDIT_HEADINGS = {
+    TxnType.EXPENSE: "修改支出",
+    TxnType.INCOME: "修改收入",
+    TxnType.TRANSFER: "修改轉帳",
+    TxnType.CARD_PAYMENT: "修改繳卡費",
+}
+# 修改繳卡費時畫面不顯示手續費：送來的手續費仍交給 P1（TXN_STRUCTURE），錯誤顯示在表單頂端
+HIDDEN_ON_CARD_PAYMENT = ("fee_amount", "fee_account_id")
+# 有「目前值」的下拉選單欄位（停用中的目前值仍要列出）
+SELECT_FIELDS = (
+    "account_id",
+    "payment_method_id",
+    "receive_account_id",
+    "from_account_id",
+    "to_account_id",
+    "fee_account_id",
+)
+
 # P1 Issue.field 與畫面欄位名稱不同的對應（只是顯示位置，不是規則）：
 # - 商家在畫面上輸入的是名稱
 # - 轉帳轉入信用卡時 P1 改走繳卡費（D9），錯誤欄位是 card_account_id，畫面上就是「轉入帳戶」
@@ -138,22 +171,48 @@ def _new_token() -> str:
     return secrets.token_urlsafe(24)
 
 
-def _options(db: Session, txn_type: str = TYPE_EXPENSE) -> dict:
-    """各類型表單的下拉選單（只列啟用中的末層科目；P1 validation 仍是最終檢查）。"""
+def _options(
+    db: Session,
+    txn_type: str = TYPE_EXPENSE,
+    *,
+    edit_type: str | None = None,
+    keep: dict[str, int] | None = None,
+) -> dict:
+    """各類型表單的下拉選單（只列啟用中的末層科目；P1 validation 仍是最終檢查）。
+
+    edit_type：修改時原交易的類型（新增為 None）。keep：修改時各選單的「目前值」，
+    停用中也列出（P1 D14 允許沒有變更的分錄繼續使用）。"""
+    keep = keep or {}
     if txn_type == TYPE_INCOME:
         return {
-            "income_groups": entry_options.income_account_groups(db),
-            "receive_groups": entry_options.balance_sheet_groups(db),
+            "income_groups": entry_options.income_account_groups(db, keep.get("account_id")),
+            "receive_groups": entry_options.balance_sheet_groups(
+                db, keep_id=keep.get("receive_account_id")
+            ),
         }
     if txn_type == TYPE_TRANSFER:
+        to_keep = keep.get("to_account_id")
+        if edit_type == TxnType.CARD_PAYMENT:
+            # 轉入只列信用卡：改成非信用卡一定會被 TXN_TYPE_IMMUTABLE 擋下
+            to_groups = entry_options.credit_card_groups(db, to_keep)
+        elif edit_type == TxnType.TRANSFER:
+            # 轉入不列信用卡：改成信用卡會變成繳卡費，一定會被 TXN_TYPE_IMMUTABLE 擋下
+            to_groups = entry_options.balance_sheet_groups(
+                db, exclude_credit_cards=True, keep_id=to_keep
+            )
+        else:
+            to_groups = entry_options.balance_sheet_groups(db)
         return {
-            "from_groups": entry_options.balance_sheet_groups(db, exclude_credit_cards=True),
-            "to_groups": entry_options.balance_sheet_groups(db),
-            "fee_groups": entry_options.expense_account_groups(db),
+            "from_groups": entry_options.balance_sheet_groups(
+                db, exclude_credit_cards=True, keep_id=keep.get("from_account_id")
+            ),
+            "to_groups": to_groups,
+            "fee_groups": entry_options.expense_account_groups(db, keep.get("fee_account_id")),
+            "card_payment": edit_type == TxnType.CARD_PAYMENT,
         }
-    methods, default_pm_id = entry_options.payment_method_choices(db)
+    methods, default_pm_id = entry_options.payment_method_choices(db, keep.get("payment_method_id"))
     return {
-        "account_groups": entry_options.expense_account_groups(db),
+        "account_groups": entry_options.expense_account_groups(db, keep.get("account_id")),
         "payment_methods": methods,
         "default_payment_method_id": default_pm_id,
         "merchant_names": entry_options.merchant_names(db),
@@ -188,13 +247,15 @@ def _form(
     txn_id: int | None = None,
     template: str | None = None,
     txn_type: str = TYPE_EXPENSE,
+    edit_type: str | None = None,
+    keep: dict[str, int] | None = None,
 ) -> Response:
-    """txn_id 不是 None 時是修改表單（/txn/{id}/edit，只有支出，沒有送出權杖）。"""
+    """txn_id 不是 None 時是修改表單（/txn/{id}/edit，沒有送出權杖）。"""
     return render(
         request,
         template or FORM_TEMPLATES[txn_type],
         {
-            **_options(db, txn_type),
+            **_options(db, txn_type, edit_type=edit_type, keep=keep),
             "values": values,
             "field_errors": field_errors or {},
             "form_errors": form_errors or [],
@@ -203,6 +264,8 @@ def _form(
             "form_url": f"/txn/{txn_id}/edit" if txn_id is not None else "/txn/new",
             "txn_id": txn_id,
             "txn_type": txn_type,
+            "form_template": FORM_TEMPLATES[txn_type],
+            "heading": EDIT_HEADINGS.get(edit_type, ""),
         },
         status_code=status_code,
     )
@@ -545,6 +608,13 @@ def show_txn(
     return _detail(request, db, txn_id)
 
 
+def _keep(values: dict[str, str] | None) -> dict[str, int]:
+    """原交易各選單的目前值（停用中也要列出）。只取原交易，不取送來的值。"""
+    if not values:
+        return {}
+    return {k: int(v) for k, v in values.items() if k in SELECT_FIELDS and v.isdigit()}
+
+
 @router.get("/txn/{txn_id:int}/edit")
 def edit_txn_page(
     request: Request,
@@ -553,13 +623,33 @@ def edit_txn_page(
     user: Annotated[User, Depends(require_user)],
 ) -> Response:
     try:
-        values = txn_detail.edit_values(db, txn_id)
+        state = txn_detail.edit_state(db, txn_id)
     except NotFound:
         return _not_found(request, txn_id)
-    except RuleViolation:
-        # 不能用快速記帳表單修改：回到明細頁（明細會說明原因）
+    if state.blocker is not None:
+        # 不能用表單修改：回到明細頁（明細會說明原因）
         return RedirectResponse(f"/txn/{txn_id}", status_code=303)
-    return _form(request, db, values, txn_id=txn_id, template="pages/txn_edit.html")
+    return _form(
+        request,
+        db,
+        state.values,
+        txn_id=txn_id,
+        template="pages/txn_edit.html",
+        txn_type=EDIT_FORM_TYPE[state.txn_type],
+        edit_type=state.txn_type,
+        keep=_keep(state.values),
+    )
+
+
+def _update_form(db: Session, form_type: str, data):
+    """修改用的 P1 Form。支出的商家名稱換成 merchant_id；
+    收入、轉帳直接轉換（繳卡費也是 TransferForm）。"""
+    if form_type == TYPE_EXPENSE:
+        merchant_id = None
+        if data.merchant_name is not None:
+            merchant_id = merchants.resolve_or_create(db, data.merchant_name).id
+        return data.to_form(merchant_id=merchant_id)
+    return data.to_form()
 
 
 @router.post("/txn/{txn_id:int}/edit")
@@ -576,10 +666,28 @@ def edit_txn(
     merchant_name: Annotated[str, Form()] = "",
     voucher_type: Annotated[str, Form()] = "",
     invoice_no: Annotated[str, Form()] = "",
+    receive_account_id: Annotated[str, Form()] = "",
+    from_account_id: Annotated[str, Form()] = "",
+    to_account_id: Annotated[str, Form()] = "",
+    fee_amount: Annotated[str, Form()] = "",
+    fee_account_id: Annotated[str, Form()] = "",
     confirmed: Annotated[str, Form()] = "",
     action: Annotated[str, Form()] = "save",
 ) -> Response:
-    values = {
+    # 伺服器端先檢查：找不到 → 404；不能用表單修改 → 422（不建立商家、不寫入、不新增稽核）
+    try:
+        state = txn_detail.edit_state(db, txn_id)
+    except NotFound:
+        return _not_found(request, txn_id)
+
+    # 表單依「原交易」類型決定；送來的 txn_type 一律不看
+    edit_type = state.txn_type if state.txn_type in EDIT_FORM_TYPE else TxnType.EXPENSE
+    form_type = EDIT_FORM_TYPE[edit_type]
+    fields = TYPE_FIELDS[form_type]
+    shown = fields
+    if edit_type == TxnType.CARD_PAYMENT:
+        shown = tuple(f for f in fields if f not in HIDDEN_ON_CARD_PAYMENT)
+    submitted = {
         "txn_date": txn_date,
         "amount": amount,
         "account_id": account_id,
@@ -588,45 +696,40 @@ def edit_txn(
         "merchant_name": merchant_name,
         "voucher_type": voucher_type,
         "invoice_no": invoice_no,
+        "receive_account_id": receive_account_id,
+        "from_account_id": from_account_id,
+        "to_account_id": to_account_id,
+        "fee_amount": fee_amount,
+        "fee_account_id": fee_account_id,
     }
-    # 伺服器端再檢查一次：不是快速記帳格式的支出，直接 POST 也不能修改（不建立商家、不寫入）
-    try:
-        txn_detail.require_quick_entry_expense(db, txn_id)
-    except NotFound:
-        return _not_found(request, txn_id)
-    except RuleViolation as exc:
+    values = {name: submitted[name] for name in fields}
+
+    def form_response(**kwargs) -> Response:
         return _form(
             request,
             db,
             values,
             txn_id=txn_id,
-            status_code=422,
-            form_errors=[(exc.code, exc.message)],
+            txn_type=form_type,
+            edit_type=edit_type,
+            keep=_keep(state.values),
+            **kwargs,
         )
+
+    if state.blocker is not None:
+        return form_response(status_code=422, form_errors=[(NOT_EDITABLE, state.blocker)])
 
     if action == ACTION_EDIT:
-        return _form(request, db, values, txn_id=txn_id)
+        return form_response()
 
     try:
-        data = parse_expense(values, require_submission_token=False)
+        data = _PARSERS[form_type](values, require_submission_token=False)
     except FormParseError as exc:
-        field_errors = {f: [(None, msg)] for f, msg in exc.errors.items() if f in FORM_FIELDS}
-        form_errors = [(None, msg) for f, msg in exc.errors.items() if f not in FORM_FIELDS]
-        return _form(
-            request,
-            db,
-            values,
-            txn_id=txn_id,
-            status_code=422,
-            field_errors=field_errors,
-            form_errors=form_errors,
-        )
+        field_errors = {f: [(None, msg)] for f, msg in exc.errors.items() if f in shown}
+        form_errors = [(None, msg) for f, msg in exc.errors.items() if f not in shown]
+        return form_response(status_code=422, field_errors=field_errors, form_errors=form_errors)
 
-    merchant_id = None
-    if data.merchant_name is not None:
-        merchant_id = merchants.resolve_or_create(db, data.merchant_name).id
-    form = data.to_form(merchant_id=merchant_id)
-
+    form = _update_form(db, form_type, data)
     try:
         result = transactions.update_transaction(
             db, txn_id, form, confirmed=_parse_confirmed(confirmed), user_id=user.id
@@ -634,16 +737,8 @@ def edit_txn(
     except NotFound:
         return _not_found(request, txn_id)
     except ValidationFailed as exc:
-        field_errors, form_errors = _split_issues(exc.result.errors)
-        return _form(
-            request,
-            db,
-            values,
-            txn_id=txn_id,
-            status_code=422,
-            field_errors=field_errors,
-            form_errors=form_errors,
-        )
+        field_errors, form_errors = _split_issues(exc.result.errors, shown)
+        return form_response(status_code=422, field_errors=field_errors, form_errors=form_errors)
     except ConfirmationRequired as exc:
         codes = dict.fromkeys((*_parse_confirmed(confirmed), *(i.code for i in exc.pending)))
         return render(

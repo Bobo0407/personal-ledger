@@ -26,7 +26,7 @@
     {% for label, accounts in account_groups %}
     {% if label %}<optgroup label="{{ label }}">{% endif %}
       {% for a in accounts %}
-      <option value="{{ a.id }}"{% if values.account_id == a.id|string %} selected{% endif %}>{{ a.name }}</option>
+      <option value="{{ a.id }}"{% if values.account_id == a.id|string %} selected{% endif %}>{{ a.name }}{% if not a.is_active %}（已停用）{% endif %}</option>
       {% endfor %}
     {% if label %}</optgroup>{% endif %}
     {% endfor %}
@@ -38,7 +38,7 @@
           {%- if field_errors.payment_method_id %} aria-invalid="true" aria-describedby="payment_method_id-error"{% endif %}>
     <option value="">請選擇付款方式</option>
     {% for pm in payment_methods %}
-    <option value="{{ pm.id }}"{% if values.payment_method_id == pm.id|string %} selected{% endif %}>{{ pm.name }}</option>
+    <option value="{{ pm.id }}"{% if values.payment_method_id == pm.id|string %} selected{% endif %}>{{ pm.name }}{% if not pm.is_active %}（已停用）{% endif %}</option>
     {% endfor %}
   </select>
   {% with name = "payment_method_id" %}{% include "partials/_field_errors.html" %}{% endwith %}

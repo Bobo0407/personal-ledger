@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}修改支出｜記帳{% endblock %}
+{% block title %}{{ heading }}｜記帳{% endblock %}
 {% block content %}
 <div class="page-head">
-  <h1>修改支出</h1>
+  <h1>{{ heading }}</h1>
   <a href="/txn/{{ txn_id }}">回明細</a>
 </div>
 <div id="txn-area">
-  {% include "partials/txn_form.html" %}
+  {% include form_template %}
 </div>
 {% endblock %}

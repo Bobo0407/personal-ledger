@@ -161,8 +161,8 @@ def parse_expense(
     return _validate(model, raw)
 
 
-class IncomeInput(BaseModel):
-    """收入（P2 Step 5A，UF03）：只有新增，一次性送出權杖必填。不開放商家。"""
+class _IncomeFields(BaseModel):
+    """收入表單的欄位（P2 Step 5A／5B）。不開放商家。"""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -171,7 +171,6 @@ class IncomeInput(BaseModel):
     account_id: OptionalInt = None  # 收入科目
     receive_account_id: OptionalInt = None
     description: OptionalText = None
-    submission_token: Annotated[str, BeforeValidator(_parse_token)]
 
     def to_form(self) -> IncomeForm:
         return IncomeForm(
@@ -183,9 +182,18 @@ class IncomeInput(BaseModel):
         )
 
 
-class TransferInput(BaseModel):
-    """轉帳（P2 Step 5A，UF03、UF04）：只有新增，一次性送出權杖必填。
-    轉入信用卡時由 P1 自動改成繳卡費（D9），這裡不判斷。"""
+class IncomeInput(_IncomeFields):
+    """新增收入（P2 Step 5A，UF03）：一次性送出權杖必填。"""
+
+    submission_token: Annotated[str, BeforeValidator(_parse_token)]
+
+
+class IncomeEditInput(_IncomeFields):
+    """修改收入（P2 Step 5B）：沒有送出權杖；送來的權杖欄位一律忽略。"""
+
+
+class _TransferFields(BaseModel):
+    """轉帳表單的欄位（P2 Step 5A／5B）。轉入信用卡時由 P1 自動改成繳卡費（D9），這裡不判斷。"""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -196,7 +204,6 @@ class TransferInput(BaseModel):
     fee_amount: OptionalInt = None
     fee_account_id: OptionalInt = None
     description: OptionalText = None
-    submission_token: Annotated[str, BeforeValidator(_parse_token)]
 
     def to_form(self) -> TransferForm:
         return TransferForm(
@@ -210,12 +217,28 @@ class TransferInput(BaseModel):
         )
 
 
-def parse_income(raw: dict[str, str]) -> IncomeInput:
-    return _validate(IncomeInput, raw)
+class TransferInput(_TransferFields):
+    """新增轉帳（P2 Step 5A，UF03、UF04）：一次性送出權杖必填。"""
+
+    submission_token: Annotated[str, BeforeValidator(_parse_token)]
 
 
-def parse_transfer(raw: dict[str, str]) -> TransferInput:
-    return _validate(TransferInput, raw)
+class TransferEditInput(_TransferFields):
+    """修改轉帳或繳卡費（P2 Step 5B）：沒有送出權杖；送來的權杖欄位一律忽略。"""
+
+
+def parse_income(
+    raw: dict[str, str], *, require_submission_token: bool = True
+) -> IncomeInput | IncomeEditInput:
+    """require_submission_token=True（預設）給新增使用；只有修改才傳 False。"""
+    return _validate(IncomeInput if require_submission_token else IncomeEditInput, raw)
+
+
+def parse_transfer(
+    raw: dict[str, str], *, require_submission_token: bool = True
+) -> TransferInput | TransferEditInput:
+    """require_submission_token=True（預設）給新增使用；只有修改才傳 False。"""
+    return _validate(TransferInput if require_submission_token else TransferEditInput, raw)
 
 
 def _validate(model, raw: dict[str, str]):

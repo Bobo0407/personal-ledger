@@ -1,4 +1,4 @@
-{# 收入、轉帳表單共用的欄位 macro（P2 Step 5A）。以 `import ... with context` 引入，
+{# 收入、轉帳表單共用的欄位 macro（P2 Step 5A／5B）。以 `import ... with context` 引入，
    才讀得到 values、field_errors。只負責畫面，不做任何帳務判斷。 #}
 
 {% macro errors(name) -%}
@@ -25,7 +25,7 @@
   {% for group_label, accounts in groups %}
   {% if group_label %}<optgroup label="{{ group_label }}">{% endif %}
     {% for a in accounts %}
-    <option value="{{ a.id }}"{% if values.get(name) == a.id|string %} selected{% endif %}>{{ a.name }}</option>
+    <option value="{{ a.id }}"{% if values.get(name) == a.id|string %} selected{% endif %}>{{ a.name }}{% if not a.is_active %}（已停用）{% endif %}</option>
     {% endfor %}
   {% if group_label %}</optgroup>{% endif %}
   {% endfor %}
@@ -57,3 +57,25 @@
   <button id="btn-home" type="submit" name="action" value="home" class="secondary">儲存並回首頁</button>
 </div>
 {% endmacro %}
+
+{# 修改（P2 Step 5B）：沒有 txn_type、沒有送出權杖；類型由伺服器依原交易決定 #}
+{% macro edit_hidden() %}
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+{% endmacro %}
+
+{% macro form_hidden(txn_type) %}
+{% if mode == "edit" %}{{ edit_hidden() }}{% else %}{{ create_hidden(txn_type) }}{% endif %}
+{% endmacro %}
+
+{% macro buttons() %}
+{% if mode == "edit" %}
+<div class="actions">
+  <button id="btn-save" type="submit" name="action" value="save">儲存修改</button>
+  <a class="button-link" href="/txn/{{ txn_id }}">取消</a>
+</div>
+{% else %}{{ save_buttons() }}{% endif %}
+{% endmacro %}
+
+{% macro disabled_elt() -%}
+{% if mode == "edit" %}#btn-save{% else %}#btn-next, #btn-home{% endif %}
+{%- endmacro %}

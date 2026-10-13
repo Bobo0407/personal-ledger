@@ -1,15 +1,16 @@
-{# 收入表單（P2 Step 5A，UF03）：日期、金額、收入科目、收款帳戶、備註。只有新增。 #}
+{# 收入表單（P2 Step 5A 新增、5B 修改，UF03）：日期、金額、收入科目、收款帳戶、備註。
+   mode："create"（/txn/new，帶 txn_type 與一次性送出權杖）或 "edit"（/txn/{id}/edit，沒有權杖）。 #}
 {% import "partials/_fields.html" as f with context %}
 {% include "partials/_txn_form_head.html" %}
 
-<form method="post" action="/txn/new" class="stack" novalidate
-      hx-post="/txn/new" hx-target="#txn-area" hx-swap="innerHTML"
-      hx-disabled-elt="#btn-next, #btn-home">
-  {{ f.create_hidden("income") }}
+<form method="post" action="{{ form_url }}" class="stack" novalidate
+      hx-post="{{ form_url }}" hx-target="#txn-area" hx-swap="innerHTML"
+      hx-disabled-elt="{{ f.disabled_elt() }}">
+  {{ f.form_hidden("income") }}
   {{ f.amount_input() }}
   {{ f.account_select("account_id", "收入科目", income_groups, "請選擇收入科目") }}
   {{ f.account_select("receive_account_id", "收款帳戶", receive_groups, "請選擇收款帳戶") }}
   {{ f.date_input() }}
   {{ f.description_input() }}
-  {{ f.save_buttons() }}
+  {{ f.buttons() }}
 </form>
