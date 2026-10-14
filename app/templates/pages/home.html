@@ -1,12 +1,45 @@
 {% extends "base.html" %}
 {% block content %}
-{# 首頁入口（P2 Step 11，UF01）：只有快速記帳與交易列表。真正的首頁（餘額、預算…）是 P3，規格 8.1 #}
+{# 首頁（規格 8.1、F26）。P3 逐步加入區塊；P3-1：快速記帳入口、帳戶餘額、帳平檢查。
+   金額與正負號由 services/home.py 決定，這裡只顯示；不提供合計（上下層科目會重複計算）。 #}
 <h1>記帳</h1>
 
 <nav class="home-actions" aria-label="主要功能">
   <a class="button-link primary" href="/txn/new">快速記一筆</a>
   <a class="button-link" href="/txn">交易列表</a>
 </nav>
+
+<section class="home-section" aria-labelledby="home-balances-title">
+  <h2 class="section-title" id="home-balances-title">帳戶餘額</h2>
+  {% if summary.balances %}
+  <ul class="home-balances">
+    {% for row in summary.balances %}
+    <li class="home-balance" data-account-id="{{ row.account_id }}">
+      <span class="home-balance-name">{{ row.name }}{% if not row.is_active %} <span class="badge">已停用</span>{% endif %}</span>
+      <span class="home-balance-amount num">{% if row.is_debt %}欠款 {% endif %}{{ "{:,}".format(row.amount) }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">尚未設定首頁帳戶</p>
+  {% endif %}
+</section>
+
+<section class="home-section" aria-labelledby="home-status-title">
+  <h2 class="section-title" id="home-status-title">系統狀態</h2>
+  {% if summary.integrity.ok %}
+  <p class="muted home-status-line">帳平檢查：正常</p>
+  {% else %}
+  <div class="alert" role="alert">
+    <p class="home-alert-title">帳平檢查發現 {{ summary.integrity.items | length }} 筆交易有問題</p>
+    <ul>
+      {% for item in summary.integrity.items %}
+      <li><a href="/txn/{{ item.transaction_id }}">交易 #{{ item.transaction_id }}</a>：{{ item.labels | join("、") }}{% if item.is_deleted %}（已刪除）{% endif %}{% if item.is_draft %}（草稿）{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</section>
 
 <p>已登入：<strong>{{ user.username }}</strong></p>
 

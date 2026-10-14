@@ -1,11 +1,13 @@
 # ruff: noqa: F811  （共用 test_web_txn_new.py 的 fixture：pytest 依參數名稱注入，不是重複定義）
-"""首頁入口與快速記帳的「常用」科目（P2 Step 11，UF01，Web 層）。"""
+"""首頁入口與快速記帳的「常用」科目（P2 Step 11，UF01，Web 層）；
+首頁帳戶餘額與帳平檢查警示（P3-1，規格 8.1、F26）。"""
 
 import re
 
+import pytest
 from sqlalchemy import select
 
-from app.models import Transaction
+from app.models import Account, Transaction
 from tests.integration.test_web_txn_edit import edit
 from tests.integration.test_web_txn_new import (  # noqa: F401
     HX,
@@ -20,7 +22,7 @@ from tests.integration.test_web_txn_new import (  # noqa: F401
     session_factory,
     submit,
 )
-from tests.ledger_helpers import acc
+from tests.ledger_helpers import TODAY, acc, insert_raw_transaction, post_manual
 
 # --- 首頁 --------------------------------------------------------------------------------
 
@@ -49,6 +51,97 @@ def test_home_requires_login_still(anon):
     resp = anon.get("/")
     assert resp.status_code == 303
     assert resp.headers["location"] == "/login?next=%2F"
+
+
+# --- P3-1 帳戶餘額與帳平檢查 -------------------------------------------------------------
+
+
+def balance_rows(html: str) -> list[str]:
+    """每列帳戶的可見文字（去掉標籤、合併空白）。"""
+    rows = re.findall(r'<li class="home-balance"[^>]*>(.*?)</li>', html, re.S)
+    return [" ".join(re.sub(r"<[^>]+>", " ", row).split()) for row in rows]
+
+
+def test_home_shows_balances_with_thousands_and_debt(client, db):
+    post_manual(db, TODAY, ("1102", 12345), ("4201", -12345), confirmed={"V10"})
+    post_manual(db, TODAY, ("5201", 3200), ("2101", -3200))
+    rows = balance_rows(client.get("/").text)
+    assert rows == ["現金 0", "郵局 12,345", "聯邦活存 0", "聯邦信用卡 欠款 3,200"]
+
+
+def test_home_negative_balances_shown_as_is(client, db):
+    post_manual(db, TODAY, ("5101", 200), ("1101", -200))
+    post_manual(db, TODAY, ("2101", 300), ("1103", -300))
+    rows = balance_rows(client.get("/").text)
+    assert "現金 -200" in rows
+    assert "聯邦信用卡 -300" in rows
+
+
+def test_home_inactive_account_marked(client, db):
+    account = db.get(Account, acc(db, "1101"))
+    account.is_active = False
+    db.commit()
+    assert "現金 已停用 0" in balance_rows(client.get("/").text)
+
+
+def test_home_has_no_balance_total(client, db):
+    post_manual(db, TODAY, ("1102", 500), ("4201", -500))
+    html = client.get("/").text
+    for word in ("合計", "總資產", "淨資產"):
+        assert word not in html
+
+
+def test_home_integrity_ok_is_a_small_line(client):
+    html = client.get("/").text
+    assert "帳平檢查：正常" in html
+    assert 'role="alert"' not in html
+
+
+def test_home_integrity_problem_shows_alert_with_links(client, db):
+    bad = insert_raw_transaction(db, "2026-10-01", ("5101", 100), ("1101", -90))
+    gone = insert_raw_transaction(db, "2026-10-02", ("5101", 100), ("1101", -1), deleted=True)
+    html = client.get("/").text
+    assert 'role="alert"' in html
+    assert "帳平檢查發現 2 筆交易有問題" in html
+    assert f'<a href="/txn/{bad}">交易 #{bad}</a>：借貸不平衡</li>' in html
+    assert f'<a href="/txn/{gone}">交易 #{gone}</a>：借貸不平衡（已刪除）</li>' in html
+    assert "帳平檢查：正常" not in html
+
+
+def _empty_transaction(db) -> int:
+    txn = Transaction(txn_date="2026-10-01", txn_type="MANUAL")
+    db.add(txn)
+    db.commit()
+    return txn.id
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda db: insert_raw_transaction(db, "2026-10-01", ("5101", 100), ("1101", -90)),
+        lambda db: insert_raw_transaction(
+            db, "2026-10-01", ("5101", 100), ("1101", -90), deleted=True
+        ),
+        lambda db: insert_raw_transaction(
+            db, "2026-10-01", ("5101", 100), ("1101", -90), status="DRAFT"
+        ),
+        lambda db: insert_raw_transaction(db, "2026-10-01", ("5101", 100)),
+        lambda db: insert_raw_transaction(db, "2026-10-01", ("5100", 100), ("1101", -100)),
+        lambda db: insert_raw_transaction(
+            db, "2026-10-01", ("5101", 100), ("1101", -90), txn_type="EXPENSE"
+        ),
+        _empty_transaction,
+    ],
+    ids=["unbalanced", "deleted", "draft", "single", "non-leaf", "expense-unbalanced", "empty"],
+)
+def test_integrity_links_open_transaction_detail(client, db, make):
+    """首頁警示的每個連結都要能進入明細（含已刪除），不能 500。"""
+    txn_id = make(db)
+    html = client.get("/").text
+    assert f'href="/txn/{txn_id}"' in html
+    resp = client.get(f"/txn/{txn_id}")
+    assert resp.status_code == 200
+    assert f"#{txn_id}" in resp.text or str(txn_id) in resp.text
 
 
 # --- 快速記帳主科目 ----------------------------------------------------------------------

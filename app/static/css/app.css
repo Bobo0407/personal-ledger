@@ -150,3 +150,13 @@ button.danger { background: var(--danger-fg); }
 /* P2 Step 11 首頁入口 */
 .home-actions { display: grid; gap: 0.75rem; margin: 1.5rem 0; }
 .home-actions .primary { padding: 1.25rem; font-size: 1.25rem; }
+
+/* P3-1 首頁：帳戶餘額、系統狀態 */
+.home-section { margin: 1.25rem 0; }
+.home-balances { list-style: none; margin: 0; padding: 0; }
+.home-balance { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0; border-bottom: 1px solid var(--border); min-width: 0; }
+.home-balance-name { min-width: 0; overflow-wrap: anywhere; }
+.home-balance-amount { flex: none; white-space: nowrap; }
+.home-status-line { margin: 0; font-size: 0.875rem; }
+.home-alert-title { margin: 0 0 0.5rem; font-weight: 600; }
+.alert a { color: inherit; }

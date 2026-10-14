@@ -26,6 +26,12 @@ def list_all(db: Session) -> list[Account]:
     return list(db.scalars(select(Account).order_by(Account.sort_order, Account.code)))
 
 
+def list_shown_on_home(db: Session) -> list[Account]:
+    """show_on_home = 1 的科目（含停用），依 (sort_order, code) 排序；不判斷五大類（P3-1）。"""
+    stmt = select(Account).where(Account.show_on_home.is_(True))
+    return list(db.scalars(stmt.order_by(Account.sort_order, Account.code)))
+
+
 def has_children(db: Session, account_id: int) -> bool:
     return bool(db.scalar(select(exists().where(Account.parent_id == account_id))))
 

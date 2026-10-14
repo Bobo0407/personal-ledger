@@ -184,6 +184,12 @@ def test_empty_states(client):
     assert summary(resp.text) == (0, 0, 0)
 
 
+def test_list_links_back_to_home(client):
+    """P3-1 驗收修正：交易列表要有明確的返回首頁入口。"""
+    html = client.get("/txn").text
+    assert '<a href="/">返回首頁</a>' in html
+
+
 def test_pages_link_to_each_other(client):
     assert '<a href="/txn/new">記一筆</a>' in client.get("/txn").text
     assert '<a href="/txn">交易列表</a>' in client.get("/txn/new").text
