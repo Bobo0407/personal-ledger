@@ -9,6 +9,9 @@
 - 收入科目、收款帳戶、轉出／轉入帳戶、手續費科目（P2 Step 5A）：一樣只列啟用中的末層科目。
   轉出帳戶不列信用卡：只是不提供一定會被 P6（不能從信用卡轉出）擋下的選項，
   規則本身仍由 P1 的結構檢查負責。
+- 快速記帳的主科目排序（P2 Step 11，UF01）：有使用紀錄的啟用中末層支出科目放進最上方的「常用」群組，
+  依使用次數由多到少，同次數照原本的 sort_order、code；從未使用過的留在各自的上層分組，順序不變。
+  使用次數的定義見 repositories/ledger.expense_main_usage_counts()。
 - 修改表單（P2 Step 4A／5B）的「目前值」：交易正在使用的科目或付款方式已停用時，P1 允許沒有變更的
   分錄繼續使用（D14），所以 keep_id 指定的那一個停用值也列出（畫面標示「已停用」）；
   其他停用值一律不列，不能切換到另一個停用值。
@@ -18,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Account, PaymentMethod
 from app.models.enums import AccountClass, AccountSubtype, VoucherType
+from app.repositories import ledger as ledger_repo
 from app.services import accounts, merchants, payment_methods
 
 # 憑證類型（規格 F18、6.6）的畫面標籤；值本身由 VoucherType 定義
@@ -62,6 +66,28 @@ def _leaf_groups_by_parent(
 def expense_account_groups(db: Session, keep_id: int | None = None) -> AccountGroups:
     """支出科目，也用於轉帳手續費科目。"""
     return _leaf_groups_by_parent(db, AccountClass.EXPENSE, keep_id)
+
+
+FREQUENT_LABEL = "常用"
+
+
+def ranked_expense_account_groups(db: Session) -> AccountGroups:
+    """快速記帳建立表單的主科目選單（P2 Step 11，UF01）。
+
+    有使用紀錄的科目移進最上方的「常用」群組（不重複出現在原本的上層分組）；
+    沒有任何使用紀錄時，結果和 expense_account_groups() 完全相同。
+    候選科目與 expense_account_groups() 一樣：啟用中、末層、EXPENSE。
+    """
+    groups = expense_account_groups(db)
+    ordered = [a for a in _leaves(db, None) if a.account_class == AccountClass.EXPENSE]
+    counts = ledger_repo.expense_main_usage_counts(db, [a.id for a in ordered])
+    # sorted() 是穩定排序：同次數保留 leaf_accounts() 的 (sort_order, code) 順序
+    used = sorted((a for a in ordered if a.id in counts), key=lambda a: -counts[a.id])
+    if not used:
+        return groups
+    used_ids = {a.id for a in used}
+    rest = [(label, [a for a in items if a.id not in used_ids]) for label, items in groups]
+    return [(FREQUENT_LABEL, used), *[(label, items) for label, items in rest if items]]
 
 
 def income_account_groups(db: Session, keep_id: int | None = None) -> AccountGroups:

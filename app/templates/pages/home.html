@@ -1,7 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
-{# P0 佔位首頁：P3 會換成真正的首頁（規格 8.1） #}
+{# 首頁入口（P2 Step 11，UF01）：只有快速記帳與交易列表。真正的首頁（餘額、預算…）是 P3，規格 8.1 #}
 <h1>記帳</h1>
+
+<nav class="home-actions" aria-label="主要功能">
+  <a class="button-link primary" href="/txn/new">快速記一筆</a>
+  <a class="button-link" href="/txn">交易列表</a>
+</nav>
+
 <p>已登入：<strong>{{ user.username }}</strong></p>
 
 <form method="post" action="/logout">

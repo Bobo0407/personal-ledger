@@ -26,7 +26,7 @@
     {% for label, accounts in account_groups %}
     {% if label %}<optgroup label="{{ label }}">{% endif %}
       {% for a in accounts %}
-      <option value="{{ a.id }}"{% if values.account_id == a.id|string %} selected{% endif %}>{{ a.name }}{% if not a.is_active %}（已停用）{% endif %}</option>
+      <option value="{{ a.id }}"{% if values.account_id == a.id|string %} selected{% endif %}>{{ a.name }}{% if label == frequent_label and a.parent %}（{{ a.parent.name }}）{% endif %}{% if not a.is_active %}（已停用）{% endif %}</option>
       {% endfor %}
     {% if label %}</optgroup>{% endif %}
     {% endfor %}

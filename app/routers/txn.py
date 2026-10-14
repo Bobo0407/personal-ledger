@@ -267,7 +267,13 @@ def _options(
         }
     methods, default_pm_id = entry_options.payment_method_choices(db, keep.get("payment_method_id"))
     return {
-        "account_groups": entry_options.expense_account_groups(db, keep.get("account_id")),
+        # 快速記帳（建立）的主科目把常用的排最上面（P2 Step 11）；修改表單、手續費、利息維持原順序
+        "account_groups": (
+            entry_options.ranked_expense_account_groups(db)
+            if edit_type is None
+            else entry_options.expense_account_groups(db, keep.get("account_id"))
+        ),
+        "frequent_label": entry_options.FREQUENT_LABEL,
         "fee_groups": entry_options.expense_account_groups(db, keep.get("fee_account_id")),
         "interest_groups": entry_options.expense_account_groups(
             db, keep.get("interest_account_id")

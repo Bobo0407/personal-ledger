@@ -374,6 +374,32 @@ def count_deleted_transactions(db: Session) -> int:
     return int(db.scalar(stmt) or 0)
 
 
+# --- 快速記帳「常用科目」的使用次數（P2 Step 11，UF01）--------------------------------------
+
+
+def expense_main_usage_counts(db: Session, account_ids: Collection[int]) -> dict[int, int]:
+    """{科目 id: 使用次數}，只含次數 ≥ 1 的科目。
+
+    次數 = 有效交易（active_postings()）中，txn_type 為 EXPENSE、且 MAIN 分錄落在該科目的交易筆數，
+    全期累計。退款（REFUND）、手續費與利息分錄（FEE、INTEREST）、多分錄（MANUAL）都不算；
+    草稿與已刪除的交易不在有效分錄裡。只用來排序快速記帳的科目選單，不是金額加總。
+    """
+    ids = list(account_ids)
+    if not ids:
+        return {}
+    stmt = (
+        active_postings()
+        .with_only_columns(Posting.account_id, func.count(func.distinct(Posting.transaction_id)))
+        .where(
+            Transaction.txn_type == TxnType.EXPENSE.value,
+            Posting.line_role == LineRole.MAIN.value,
+            Posting.account_id.in_(ids),
+        )
+        .group_by(Posting.account_id)
+    )
+    return {account_id: int(count) for account_id, count in db.execute(stmt).all()}
+
+
 # --- 連續補記「本次已記」（P2 Step 10）-------------------------------------------------------
 #
 # 依 id 取回指定的幾筆交易（含已刪除的），只供 /txn/new 的「本次已記 N 筆」逐列顯示。
