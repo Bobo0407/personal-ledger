@@ -44,7 +44,8 @@ def test_home_keeps_login_info_and_logout(client):
 def test_home_has_only_the_expected_entries(client):
     html = client.get("/").text
     hrefs = re.findall(r'<a [^>]*href="([^"]+)"', html)
-    assert sorted(hrefs) == ["/settings", "/txn", "/txn/new"]
+    # 「/budgets」出現兩次：導覽的「預算」＋空狀態的「前往設定」
+    assert sorted(hrefs) == ["/budgets", "/budgets", "/settings", "/txn", "/txn/new"]
     assert "/merchants" not in html
 
 
@@ -366,3 +367,69 @@ def test_settings_change_shows_on_home(client, db):
     )
     assert resp.status_code == 303
     assert "繳款日 2026-10-25" in card_text(client.get("/").text)
+
+
+# --- 首頁預算區塊（P3-3B）----------------------------------------------------------------
+
+
+def test_home_budget_nav_entry(client):
+    html = client.get("/").text
+    assert re.search(r'<a class="button-link" href="/budgets">預算</a>', html)
+
+
+def test_home_budget_empty_state(client):
+    html = client.get("/").text
+    assert "尚未設定預算" in html
+    assert re.search(r'<a href="/budgets">前往設定</a>', html)
+    assert "budget-card" not in html
+
+
+def test_home_budget_section_between_balances_and_cards(client):
+    html = client.get("/").text
+    assert html.index("帳戶餘額") < html.index("本月預算") < html.index("home-cards-title")
+
+
+def _set(db, code, amount, month="2026-10"):
+    from app.services import budgets
+
+    budgets.set_budget(db, acc(db, code), month, amount)
+
+
+def test_home_budget_card_shows_progress(client, db):
+    _set(db, "5100", 1000)
+    post_manual(db, TODAY, ("5101", 300), ("1101", -300))
+    html = client.get("/").text
+    assert "尚未設定預算" not in html
+    card = re.search(r'<div class="budget-card"[^>]*data-state="(\w+)"', html)
+    assert card and card.group(1) == "ok"
+    assert "30%" in html and '剩餘 <span class="num">700</span>' in html
+
+
+@pytest.mark.parametrize(
+    ("spent", "state", "text"),
+    [(800, "warn", "接近上限"), (1000, "used_up", "已用完"), (1200, "over", "已超支")],
+)
+def test_home_budget_states(client, db, spent, state, text):
+    _set(db, "5100", 1000)
+    post_manual(db, TODAY, ("5101", spent), ("1101", -spent))
+    html = client.get("/").text
+    assert f'data-state="{state}"' in html and text in html
+
+
+def test_home_budget_over_shows_over_amount(client, db):
+    _set(db, "5100", 1000)
+    post_manual(db, TODAY, ("5101", 1200), ("1101", -1200))
+    assert '超支 <span class="num">200</span> 元' in client.get("/").text
+
+
+def test_home_budget_invalid_alert_pct_shows_error_only_there(client, db):
+    from app.models import Setting
+
+    _set(db, "5100", 1000)
+    db.get(Setting, "budget_alert_pct").value = "abc"
+    db.commit()
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert 'data-code="BUDGET_SETTING"' in resp.text
+    assert "budget-card" not in resp.text
+    assert "帳戶餘額" in resp.text

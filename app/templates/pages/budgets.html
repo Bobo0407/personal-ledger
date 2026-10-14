@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}預算｜記帳{% endblock %}
+{% block content %}
+{# 預算設定與進度（P3-3B，F20）。普通 POST + 303；驗證與寫入都在 services/budgets.py。
+   V1 不支援取消預算：這裡沒有刪除或取消的控制項。 #}
+<div class="page-head">
+  <h1>預算</h1>
+  <a href="/">返回首頁</a>
+</div>
+<p class="muted">每個第一層費用科目可以設定每月預算，已用金額包含它底下所有子科目、扣掉退款，不含勾選「不計入預算」的交易。預算設定後只能調整金額，不能取消；調整從所選月份起生效，之前月份的預算不受影響。</p>
+
+{% if error is not none and error_for is none %}
+<p class="alert" role="alert" data-code="{{ error.code }}">{{ error.message }}</p>
+{% endif %}
+{% if settings.progress_error %}
+<p class="alert" role="alert" data-code="BUDGET_SETTING">預算進度暫時無法顯示：{{ settings.progress_error }}。設定預算不受影響。</p>
+{% endif %}
+
+{% for row in settings.rows %}
+{% set mine = submitted.get("account_id") == row.account_id | string %}
+{% if mine %}
+  {% set v_amount = submitted.monthly_amount %}
+  {% set v_month = submitted.effective_from %}
+{% else %}
+  {% set v_amount = row.current.monthly_amount if row.current else "" %}
+  {% set v_month = settings.month %}
+{% endif %}
+{% set has_error = error is not none and error_for == row.account_id %}
+<section class="settings-card" id="budget-{{ row.account_id }}" data-account-id="{{ row.account_id }}">
+  {% if row.card %}
+    {% with card = row.card %}{% include "partials/budget_card.html" %}{% endwith %}
+  {% else %}
+  <h3 class="settings-card-name">{{ row.account_name }}{% if not row.is_active %} <span class="badge">已停用</span>{% endif %}</h3>
+  {% endif %}
+
+  {% if row.current %}
+  <p class="muted budget-current">本月生效：<span class="num">{{ "{:,}".format(row.current.monthly_amount) }}</span> 元（自 {{ row.current.effective_from }} 起）</p>
+  {% else %}
+  <p class="muted budget-current">本月尚未設定預算</p>
+  {% endif %}
+  {% for v in row.scheduled %}
+  <p class="muted budget-scheduled">{{ v.effective_from }} 起：<span class="num">{{ "{:,}".format(v.monthly_amount) }}</span> 元（已排定）</p>
+  {% endfor %}
+
+  {% if saved == row.account_id %}<p class="notice notice-ok" role="status">已儲存</p>{% endif %}
+
+  {% if row.is_active %}
+  <form method="post" action="/budgets/{{ row.account_id }}" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="amount-{{ row.account_id }}">每月預算（元）</label>
+    <input id="amount-{{ row.account_id }}" name="monthly_amount" type="number" inputmode="numeric" min="1" step="1" value="{{ v_amount }}"
+           {%- if has_error and error_field == "amount" %} aria-invalid="true"{% endif %}>
+    <label for="month-{{ row.account_id }}">從哪個月起生效</label>
+    <input id="month-{{ row.account_id }}" name="effective_from" type="month" min="{{ settings.month }}" value="{{ v_month }}"
+           {%- if has_error and error_field == "month" %} aria-invalid="true"{% endif %}>
+    {% if has_error %}<p class="field-error" data-code="{{ error.code }}" role="alert">{{ error.message }}</p>{% endif %}
+    <button type="submit">儲存</button>
+  </form>
+  {% else %}
+  <p class="muted">已停用的科目不能修改預算。</p>
+  {% endif %}
+</section>
+{% else %}
+<p class="empty">沒有可以設定預算的第一層費用科目。</p>
+{% endfor %}
+{% endblock %}

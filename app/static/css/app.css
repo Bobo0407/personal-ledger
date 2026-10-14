@@ -172,3 +172,14 @@ button.danger { background: var(--danger-fg); }
 .home-card-note { margin: 0.5rem 0 0; font-size: 0.875rem; }
 .settings-card { margin: 1rem 0; padding-top: 0.75rem; border-top: 1px solid var(--border); }
 .settings-card-name { font-size: 1rem; margin: 0 0 0.5rem; overflow-wrap: anywhere; }
+
+/* P3-3B 預算進度卡（/budgets 與首頁共用）：顏色用現有的 warn／danger token，文字標籤補足不靠顏色 */
+.budget-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.budget-card { padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 0.5rem; min-width: 0; }
+.budget-card[data-state="warn"] { background: var(--warn-bg); color: var(--warn-fg); border-color: transparent; }
+.budget-card[data-state="over"], .budget-card[data-state="used_up"] { background: var(--danger-bg); color: var(--danger-fg); border-color: transparent; }
+.budget-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.budget-card-name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.budget-flag { border-color: currentColor; }
+.budget-card-line { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
+.budget-current, .budget-scheduled { margin: 0.25rem 0 0; font-size: 0.875rem; }

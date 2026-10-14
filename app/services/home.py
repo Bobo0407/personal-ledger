@@ -1,4 +1,4 @@
-"""首頁（P3-1／P3-2B；規格 8.1、F26）：帳戶餘額、信用卡本期應繳、帳平檢查狀態。只讀，不寫入。
+"""首頁（P3-1／P3-2B／P3-3B；規格 8.1、F26）：帳戶餘額、本月預算、信用卡、帳平狀態。只讀。
 
 帳戶餘額
 - 只列 show_on_home = 1 的資產、負債科目；其他五大類即使勾了也略過（規格 8.1 只定義這兩類）。
@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 
 from app.models.enums import AccountClass, AccountSubtype, TxnStatus
 from app.repositories import accounts as account_repo
-from app.services import credit_cards, integrity
+from app.services import budgets, credit_cards, integrity
+from app.services.errors import InvalidSetting
 from app.services.ledger_queries import balance
 
 HOME_ACCOUNT_CLASSES = (AccountClass.ASSET, AccountClass.LIABILITY)
@@ -91,6 +92,8 @@ class HomeSummary:
     balances: tuple[HomeBalance, ...]
     integrity: IntegrityStatus
     cards: tuple[HomeCard, ...] = ()
+    budget_cards: tuple[budgets.BudgetCard, ...] = ()
+    budget_error: str | None = None  # budget_alert_pct 不合法：預算區塊顯示錯誤，其他區塊照常
 
 
 def home_balances(db: Session) -> tuple[HomeBalance, ...]:
@@ -120,6 +123,17 @@ def home_cards(db: Session) -> tuple[HomeCard, ...]:
     return tuple(cards)
 
 
+def home_budgets(db: Session) -> tuple[tuple[budgets.BudgetCard, ...], str | None]:
+    """本月所有有生效預算的第一層費用科目（含停用者），不重新排序。
+
+    budget_alert_pct 不合法時不 fallback 成 80：回傳錯誤說明，讓預算區塊明確顯示，不拖垮整個首頁。
+    """
+    try:
+        return budgets.budget_cards(db), None
+    except InvalidSetting as exc:
+        return (), str(exc)
+
+
 def integrity_status(db: Session) -> IntegrityStatus:
     grouped: dict[int, list[integrity.Problem]] = {}
     for problem in integrity.check_all(db):  # 已依 (transaction_id, code) 排序
@@ -138,6 +152,11 @@ def integrity_status(db: Session) -> IntegrityStatus:
 
 
 def home_summary(db: Session) -> HomeSummary:
+    budget_rows, budget_error = home_budgets(db)
     return HomeSummary(
-        balances=home_balances(db), integrity=integrity_status(db), cards=home_cards(db)
+        balances=home_balances(db),
+        integrity=integrity_status(db),
+        cards=home_cards(db),
+        budget_cards=budget_rows,
+        budget_error=budget_error,
     )

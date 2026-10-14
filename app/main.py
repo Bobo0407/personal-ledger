@@ -18,6 +18,7 @@ from app.csrf import csrf_protect
 from app.deps import NotAuthenticated, login_url
 from app.logging_config import setup_logging
 from app.routers import auth as auth_router
+from app.routers import budgets as budgets_router
 from app.routers import home as home_router
 from app.routers import merchants as merchants_router
 from app.routers import settings as settings_router
@@ -71,6 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(auth_router.router)
     app.include_router(home_router.router)
+    app.include_router(budgets_router.router)
     app.include_router(merchants_router.router)
     app.include_router(settings_router.router)
     app.include_router(txn_router.router)

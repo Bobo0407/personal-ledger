@@ -25,9 +25,15 @@
 
 V14（跨過 80%／100%）
 - 這裡只提供純函式 crossing()；草稿差額與 create／edit／restore 接線留 P3-3C。
+
+畫面用的資料（P3-3B）
+- BudgetCard：把 BudgetProgress 加上「顯示狀態」（ok／warn／used_up／over）與超支金額，
+  /budgets 與首頁共用，template 不必自己判斷預算語意。
+- settings_rows()：/budgets 設定頁的資料（目前生效版本、已排定的未來版本、本月進度）。
 """
 
 import re
+from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
@@ -235,3 +241,93 @@ def monthly_progress(db: Session, month: str | None = None) -> tuple[BudgetProgr
     alert = budget_alert_pct(db)
     accounts = [a for a in account_repo.list_all(db) if a.id in chosen]  # 已依 (sort_order, code)
     return tuple(_progress(db, a, chosen[a.id], month, first, last, alert) for a in accounts)
+
+
+# --- 畫面用的資料（P3-3B）-----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BudgetCard:
+    """一個科目的預算進度卡（/budgets 與首頁共用）。只是顯示用的包裝，不重算任何金額。"""
+
+    progress: BudgetProgress
+
+    @property
+    def state(self) -> str:
+        """ok／warn／used_up（剛好 100%）／over（超支）。template 只比對這個字串。"""
+        if self.progress.status == BudgetStatus.OVER:
+            return "used_up" if self.progress.remaining == 0 else "over"
+        return "warn" if self.progress.status == BudgetStatus.WARN else "ok"
+
+    @property
+    def over_amount(self) -> int:
+        return max(-self.progress.remaining, 0)
+
+
+@dataclass(frozen=True)
+class BudgetVersion:
+    effective_from: str  # YYYY-MM
+    monthly_amount: int
+
+
+@dataclass(frozen=True)
+class BudgetSettingsRow:
+    account_id: int
+    account_name: str
+    is_active: bool
+    current: BudgetVersion | None  # 本月生效的版本；None = 本月沒有預算
+    scheduled: tuple[BudgetVersion, ...]  # 已排定、尚未生效的未來版本（由近到遠）
+    card: BudgetCard | None  # 本月進度；沒有預算、或 budget_alert_pct 異常時為 None
+
+
+@dataclass(frozen=True)
+class BudgetSettings:
+    month: str  # 目前月份（YYYY-MM）：生效月份欄位的預設值與 min
+    rows: tuple[BudgetSettingsRow, ...]
+    progress_error: str | None  # budget_alert_pct 不合法時的說明；進度不顯示，表單仍可使用
+
+
+def budget_cards(db: Session, month: str | None = None) -> tuple[BudgetCard, ...]:
+    """指定月份（預設本月）所有有生效預算的科目，沒有重新排序。"""
+    return tuple(BudgetCard(p) for p in monthly_progress(db, month))
+
+
+def settings_rows(db: Session, month: str | None = None) -> BudgetSettings:
+    """/budgets 設定頁的資料。
+
+    列出啟用中的第一層費用科目；停用的科目只有「本月有生效預算」才列出（唯讀，不因停用而消失）。
+    budget_alert_pct 不合法時不 fallback：進度留空並回報錯誤，其餘（目前版本、未來版本）照常。
+    """
+    month = month or current_month()
+    in_force = _latest_per_account(budget_repo.in_force_candidates(db, month))
+    later: dict[int, list[BudgetVersion]] = defaultdict(list)
+    for row in budget_repo.later_versions(db, month):
+        later[row.account_id].append(BudgetVersion(row.effective_from, row.monthly_amount))
+    cards: dict[int, BudgetCard] = {}
+    error: str | None = None
+    try:
+        cards = {c.progress.account_id: c for c in budget_cards(db, month)}
+    except InvalidSetting as exc:
+        error = str(exc)
+    rows = []
+    for account in account_repo.list_all(db):  # 已依 (sort_order, code)
+        if account.account_class != AccountClass.EXPENSE or account.parent_id is not None:
+            continue
+        current = in_force.get(account.id)
+        if not account.is_active and current is None:
+            continue
+        rows.append(
+            BudgetSettingsRow(
+                account_id=account.id,
+                account_name=account.name,
+                is_active=account.is_active,
+                current=(
+                    BudgetVersion(current.effective_from, current.monthly_amount)
+                    if current is not None
+                    else None
+                ),
+                scheduled=tuple(later.get(account.id, ())),
+                card=cards.get(account.id),
+            )
+        )
+    return BudgetSettings(month=month, rows=tuple(rows), progress_error=error)

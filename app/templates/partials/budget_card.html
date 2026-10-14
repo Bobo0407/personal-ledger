@@ -1,0 +1,17 @@
+{# 一個科目的預算進度卡（/budgets 與首頁共用）。參數：card（services/budgets.BudgetCard）。
+   金額、使用率、狀態都來自 service；這裡只依 card.state 選文字與樣式，不做預算運算。 #}
+{% set p = card.progress %}
+<div class="budget-card" data-account-id="{{ p.account_id }}" data-state="{{ card.state }}">
+  <div class="budget-card-head">
+    <span class="budget-card-name">{{ p.account_name }}{% if not p.is_active %} <span class="badge">已停用</span>{% endif %}</span>
+    {% if card.state == "warn" %}<span class="badge budget-flag">接近上限</span>
+    {% elif card.state == "over" %}<span class="badge budget-flag">已超支</span>
+    {% elif card.state == "used_up" %}<span class="badge budget-flag">已用完</span>{% endif %}
+  </div>
+  <p class="budget-card-line">已用 <span class="num">{{ "{:,}".format(p.used) }}</span> / <span class="num">{{ "{:,}".format(p.budget) }}</span>　<span class="num budget-card-pct">{{ p.usage_pct }}%</span></p>
+  <p class="budget-card-line budget-card-rest">
+    {%- if card.state == "over" %}超支 <span class="num">{{ "{:,}".format(card.over_amount) }}</span> 元
+    {%- elif card.state == "used_up" %}剩 0 元
+    {%- elif card.state == "warn" %}剩 <span class="num">{{ "{:,}".format(p.remaining) }}</span> 元
+    {%- else %}剩餘 <span class="num">{{ "{:,}".format(p.remaining) }}</span>{% endif %}</p>
+</div>

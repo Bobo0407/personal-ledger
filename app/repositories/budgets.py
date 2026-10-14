@@ -27,5 +27,11 @@ def in_force_candidates(db: Session, month: str, account_id: int | None = None) 
     return list(db.scalars(stmt.order_by(Budget.account_id, Budget.effective_from)))
 
 
+def later_versions(db: Session, month: str) -> list[Budget]:
+    """effective_from > month 的預算列（已排定、尚未生效），依 (account_id, effective_from)。"""
+    stmt = select(Budget).where(Budget.effective_from > month)
+    return list(db.scalars(stmt.order_by(Budget.account_id, Budget.effective_from)))
+
+
 def has_budgets(db: Session, account_id: int) -> bool:
     return bool(db.scalar(select(exists().where(Budget.account_id == account_id))))
