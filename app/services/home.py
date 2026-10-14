@@ -1,4 +1,4 @@
-"""首頁（P3-1；規格 8.1、F26）：帳戶餘額與帳平檢查狀態。只讀，不寫入。
+"""首頁（P3-1／P3-2B；規格 8.1、F26）：帳戶餘額、信用卡本期應繳、帳平檢查狀態。只讀，不寫入。
 
 帳戶餘額
 - 只列 show_on_home = 1 的資產、負債科目；其他五大類即使勾了也略過（規格 8.1 只定義這兩類）。
@@ -17,9 +17,9 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from app.models.enums import AccountClass, TxnStatus
+from app.models.enums import AccountClass, AccountSubtype, TxnStatus
 from app.repositories import accounts as account_repo
-from app.services import integrity
+from app.services import credit_cards, integrity
 from app.services.ledger_queries import balance
 
 HOME_ACCOUNT_CLASSES = (AccountClass.ASSET, AccountClass.LIABILITY)
@@ -63,9 +63,34 @@ class IntegrityStatus:
 
 
 @dataclass(frozen=True)
+class HomeCard:
+    """首頁信用卡區塊的一列（P3-2B）。due = None 代表尚未設定結帳日。
+
+    金額與日期全部來自 credit_cards.amount_due()；這裡只加顯示用的判斷，不重算。
+    """
+
+    account_id: int
+    name: str
+    is_active: bool
+    due: credit_cards.CardDue | None
+
+    @property
+    def is_overdue(self) -> bool:
+        """繳款日已過且仍有本期應繳（只是顯示判斷，不是 P3-2A 的旗標）。"""
+        return (
+            self.due is not None and self.due.cycle.days_until_due < 0 and self.due.amount_due > 0
+        )
+
+    @property
+    def overdue_days(self) -> int:
+        return -self.due.cycle.days_until_due if self.due is not None else 0
+
+
+@dataclass(frozen=True)
 class HomeSummary:
     balances: tuple[HomeBalance, ...]
     integrity: IntegrityStatus
+    cards: tuple[HomeCard, ...] = ()
 
 
 def home_balances(db: Session) -> tuple[HomeBalance, ...]:
@@ -80,6 +105,19 @@ def home_balances(db: Session) -> tuple[HomeBalance, ...]:
         for account in account_repo.list_shown_on_home(db)
         if account.account_class in HOME_ACCOUNT_CLASSES
     )
+
+
+def home_cards(db: Session) -> tuple[HomeCard, ...]:
+    """show_on_home = 1 的信用卡。停用且沒有設定的卡略過（停用卡不能改設定，連結沒有用）。"""
+    cards = []
+    for account in account_repo.list_shown_on_home(db):
+        if account.subtype != AccountSubtype.CREDIT_CARD:
+            continue
+        due = credit_cards.amount_due(db, account.id)
+        if due is None and not account.is_active:
+            continue
+        cards.append(HomeCard(account.id, account.name, account.is_active, due))
+    return tuple(cards)
 
 
 def integrity_status(db: Session) -> IntegrityStatus:
@@ -100,4 +138,6 @@ def integrity_status(db: Session) -> IntegrityStatus:
 
 
 def home_summary(db: Session) -> HomeSummary:
-    return HomeSummary(balances=home_balances(db), integrity=integrity_status(db))
+    return HomeSummary(
+        balances=home_balances(db), integrity=integrity_status(db), cards=home_cards(db)
+    )

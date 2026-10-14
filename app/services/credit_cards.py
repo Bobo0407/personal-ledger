@@ -6,6 +6,7 @@
   結帳日、繳款日必填（1–31）；扣繳帳戶若有設定，必須是啟用中、最末層的 BANK 資產帳戶。
 - 帳單週期、本期應繳（P3-2A；規格 6.2、8.1、T18）：current_cycle()、amount_due()。
   沒有設定時回傳 None，不推測週期。語意與限制記在 docs/decisions/p3.md。
+- 設定頁（P3-2B）：list_card_settings()、autopay_candidates()、update_card_settings()。
 """
 
 import calendar
@@ -15,7 +16,7 @@ from datetime import date, timedelta
 from sqlalchemy.orm import Session
 
 from app import clock
-from app.models import CreditCardProfile
+from app.models import Account, CreditCardProfile
 from app.models.enums import AccountClass, AccountSubtype, TxnType
 from app.repositories import accounts as account_repo
 from app.repositories import ledger as ledger_repo
@@ -213,4 +214,51 @@ def amount_due(db: Session, card_account_id: int, today: date | None = None) -> 
         paid_since=paid_since,
         amount_due=max(raw, 0),
         overpaid=max(-raw, 0),
+    )
+
+
+# --- 設定頁（P3-2B；規格 F07、7.3）-----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CardSettingsRow:
+    card: Account
+    profile: CreditCardProfile | None  # None = 尚未設定
+
+
+def list_card_settings(db: Session) -> tuple[CardSettingsRow, ...]:
+    """設定頁：所有啟用中的信用卡（不論是否顯示在首頁）與其目前設定。"""
+    return tuple(
+        CardSettingsRow(card, get_profile(db, card.id))
+        for card in account_repo.list_credit_cards(db)
+    )
+
+
+def autopay_candidates(db: Session) -> list[Account]:
+    return account_repo.list_autopay_candidates(db)
+
+
+def update_card_settings(
+    db: Session,
+    card_account_id: int,
+    *,
+    closing_day: int | None,
+    due_day: int | None,
+    autopay_account_id: int | None = None,
+) -> CreditCardProfile:
+    """設定頁的儲存：只改結帳日、繳款日、扣繳帳戶，保留既有 credit_limit。
+
+    set_profile() 沒收到 credit_limit 會把它清成 None；設定頁沒有額度欄位，
+    所以這裡先讀出現值再原封不動帶回去。驗證與寫入都交給 set_profile()。
+    """
+    if autopay_account_id is not None and account_repo.get(db, autopay_account_id) is None:
+        raise RuleViolation("M07", "扣繳帳戶必須是啟用中、最末層的銀行（BANK）帳戶")
+    existing = get_profile(db, card_account_id)
+    return set_profile(
+        db,
+        card_account_id,
+        closing_day=closing_day,
+        due_day=due_day,
+        autopay_account_id=autopay_account_id,
+        credit_limit=existing.credit_limit if existing is not None else None,
     )

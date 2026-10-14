@@ -8,6 +8,7 @@ from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Account, CreditCardProfile, Merchant, PaymentMethod, Posting
+from app.models.enums import AccountClass, AccountSubtype
 
 
 def get(db: Session, account_id: int) -> Account | None:
@@ -29,6 +30,26 @@ def list_all(db: Session) -> list[Account]:
 def list_shown_on_home(db: Session) -> list[Account]:
     """show_on_home = 1 的科目（含停用），依 (sort_order, code) 排序；不判斷五大類（P3-1）。"""
     stmt = select(Account).where(Account.show_on_home.is_(True))
+    return list(db.scalars(stmt.order_by(Account.sort_order, Account.code)))
+
+
+def list_credit_cards(db: Session, active_only: bool = True) -> list[Account]:
+    """subtype = CREDIT_CARD 的科目（P3-2B 設定頁），依 (sort_order, code) 排序。"""
+    stmt = select(Account).where(Account.subtype == AccountSubtype.CREDIT_CARD)
+    if active_only:
+        stmt = stmt.where(Account.is_active.is_(True))
+    return list(db.scalars(stmt.order_by(Account.sort_order, Account.code)))
+
+
+def list_autopay_candidates(db: Session) -> list[Account]:
+    """扣繳帳戶候選：啟用中、最末層的 ASSET／BANK（與 M07 相同條件；最終仍由 set_profile 驗證）。"""
+    child = Account.__table__.alias("child")
+    stmt = select(Account).where(
+        Account.account_class == AccountClass.ASSET,
+        Account.subtype == AccountSubtype.BANK,
+        Account.is_active.is_(True),
+        ~exists().where(child.c.parent_id == Account.id),
+    )
     return list(db.scalars(stmt.order_by(Account.sort_order, Account.code)))
 
 

@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}設定｜記帳{% endblock %}
+{% block content %}
+{# 設定（P3-2B，F07）。目前只有信用卡設定。表單用普通 POST；驗證與寫入都在 services/credit_cards.py。 #}
+<div class="page-head">
+  <h1>設定</h1>
+  <a href="/">返回首頁</a>
+</div>
+
+<h2 class="section-title">信用卡設定</h2>
+<p class="muted">結帳日與繳款日用來推算首頁的「本期應繳」。該月沒有那一天（例如 31 日）就以月底計。修改結帳日後，過去的週期會重新切分，只影響顯示，不改帳務。</p>
+
+{% if error is not none and error_for is none %}
+<p class="alert" role="alert" data-code="{{ error.code }}">{{ error.message }}</p>
+{% endif %}
+
+{% for row in rows %}
+{% set card = row.card %}
+{% set profile = row.profile %}
+{% set mine = submitted.get("card_id") == card.id | string %}
+{% if mine %}
+  {% set v_closing = submitted.closing_day %}
+  {% set v_due = submitted.due_day %}
+  {% set v_autopay = submitted.autopay_account_id %}
+{% else %}
+  {% set v_closing = profile.closing_day if profile else "" %}
+  {% set v_due = profile.due_day if profile else "" %}
+  {% set v_autopay = (profile.autopay_account_id | string) if profile and profile.autopay_account_id else "" %}
+{% endif %}
+{% set has_error = error is not none and error_for == card.id %}
+<section class="settings-card" id="card-{{ card.id }}" data-card-id="{{ card.id }}">
+  <h3 class="settings-card-name">{{ card.name }}{% if not profile %} <span class="badge">尚未設定</span>{% endif %}</h3>
+  {% if saved == card.id %}<p class="notice notice-ok" role="status">已儲存</p>{% endif %}
+  <form method="post" action="/settings/cards/{{ card.id }}" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="closing-{{ card.id }}">結帳日（1–31）</label>
+    <input id="closing-{{ card.id }}" name="closing_day" type="number" inputmode="numeric" min="1" max="31" value="{{ v_closing }}"
+           {%- if has_error %} aria-invalid="true"{% endif %}>
+    <label for="due-{{ card.id }}">繳款日（1–31）</label>
+    <input id="due-{{ card.id }}" name="due_day" type="number" inputmode="numeric" min="1" max="31" value="{{ v_due }}"
+           {%- if has_error %} aria-invalid="true"{% endif %}>
+    <label for="autopay-{{ card.id }}">扣繳帳戶</label>
+    <select id="autopay-{{ card.id }}" name="autopay_account_id">
+      <option value="">不設定</option>
+      {% for a in autopay_options %}
+      <option value="{{ a.id }}"{% if v_autopay == a.id | string %} selected{% endif %}>{{ a.name }}</option>
+      {% endfor %}
+    </select>
+    {% if has_error %}<p class="field-error" data-code="{{ error.code }}" role="alert">{{ error.message }}</p>{% endif %}
+    <button type="submit">儲存</button>
+  </form>
+</section>
+{% else %}
+<p class="empty">沒有啟用中的信用卡帳戶。</p>
+{% endfor %}
+{% endblock %}

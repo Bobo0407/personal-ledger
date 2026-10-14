@@ -160,3 +160,15 @@ button.danger { background: var(--danger-fg); }
 .home-status-line { margin: 0; font-size: 0.875rem; }
 .home-alert-title { margin: 0 0 0.5rem; font-weight: 600; }
 .alert a { color: inherit; }
+
+/* P3-2B 首頁信用卡區塊、設定頁 */
+.home-cards { list-style: none; margin: 0; padding: 0; }
+.home-card { padding: 0.5rem 0; border-bottom: 1px solid var(--border); min-width: 0; }
+.home-card-name { font-weight: 600; overflow-wrap: anywhere; }
+.home-card-line { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
+.home-card-line a { color: var(--accent); }
+.home-card-amount { font-size: 1.25rem; font-weight: 600; }
+.home-card-overdue { margin: 0.5rem 0 0; }
+.home-card-note { margin: 0.5rem 0 0; font-size: 0.875rem; }
+.settings-card { margin: 1rem 0; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+.settings-card-name { font-size: 1rem; margin: 0 0 0.5rem; overflow-wrap: anywhere; }

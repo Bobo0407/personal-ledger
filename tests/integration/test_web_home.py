@@ -3,6 +3,7 @@
 首頁帳戶餘額與帳平檢查警示（P3-1，規格 8.1、F26）。"""
 
 import re
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -40,11 +41,16 @@ def test_home_keeps_login_info_and_logout(client):
     assert re.search(r'name="csrf_token" value="[^"]+"', html)
 
 
-def test_home_has_only_the_two_entries(client):
+def test_home_has_only_the_expected_entries(client):
     html = client.get("/").text
     hrefs = re.findall(r'<a [^>]*href="([^"]+)"', html)
-    assert sorted(hrefs) == ["/txn", "/txn/new"]
+    assert sorted(hrefs) == ["/settings", "/txn", "/txn/new"]
     assert "/merchants" not in html
+
+
+def test_home_settings_entry(client):
+    html = client.get("/").text
+    assert re.search(r'<a class="button-link" href="/settings">設定</a>', html)
 
 
 def test_home_requires_login_still(anon):
@@ -264,3 +270,99 @@ def test_run_summary_unaffected_by_ranking(client, db):
     resp = spend(client, db, "5201")
     assert 'data-run-count="2"' in resp.text
     assert "已儲存：網購 120 元" in " ".join(resp.text.split())
+
+
+# --- P3-2B 信用卡區塊 ---------------------------------------------------------------------
+
+
+def card_text(html: str) -> str:
+    match = re.search(r'<li class="home-card"[^>]*>(.*?)</li>', html, re.S)
+    assert match, "no card block"
+    return " ".join(re.sub(r"<[^>]+>", " ", match.group(1)).split())
+
+
+def test_home_card_shows_amount_due_and_due_date(client, db):
+    post_manual(db, TODAY, ("5201", 3200), ("2101", -3200))
+    html = client.get("/").text
+    # 凍結今天 2026-10-15：結帳日當天的消費算本期；繳款日 11/03，還有 19 天
+    assert card_text(html) == "聯邦信用卡 本期應繳 3,200 繳款日 2026-11-03（還有 19 天）"
+    assert "金額依記帳資料推算，可能與銀行帳單不同（入帳日、分期、首期期初餘額）。" in html
+
+
+def test_home_card_zero_due_hides_remaining_days(client):
+    text = card_text(client.get("/").text)
+    assert text == "聯邦信用卡 本期應繳 0 繳款日 2026-11-03"
+    assert "還有" not in text
+
+
+def test_home_card_overpaid(client, db):
+    from app.services import transactions
+    from app.services.entries import CardPaymentForm
+
+    post_manual(db, TODAY - timedelta(days=20), ("5201", 500), ("2101", -500))
+    transactions.record_card_payment(
+        db, CardPaymentForm(TODAY, 800, acc(db, "2101"), acc(db, "1103"))
+    )
+    text = card_text(client.get("/").text)
+    assert "本期應繳 0" in text and "已多繳 300" in text and "還有" not in text
+
+
+def test_home_card_due_today(client, db, monkeypatch):
+    from tests.ledger_helpers import freeze_today
+
+    post_manual(db, date(2026, 10, 10), ("5201", 700), ("2101", -700))
+    freeze_today(monkeypatch, date(2026, 11, 3))
+    assert "繳款日 2026-11-03（今天截止）" in card_text(client.get("/").text)
+
+
+def test_home_card_overdue_message(client, db, monkeypatch):
+    from tests.ledger_helpers import freeze_today
+
+    post_manual(db, date(2026, 10, 10), ("5201", 700), ("2101", -700))
+    freeze_today(monkeypatch, date(2026, 11, 10))
+    text = card_text(client.get("/").text)
+    assert "依目前記帳資料，繳款日已過 7 天，尚有 700 元本期應繳。" in text
+    assert "還有" not in text and "今天截止" not in text
+
+
+def test_home_card_no_overdue_message_when_nothing_due(client, monkeypatch):
+    from tests.ledger_helpers import freeze_today
+
+    freeze_today(monkeypatch, date(2026, 11, 10))
+    assert "已過" not in card_text(client.get("/").text)
+
+
+def test_home_card_without_profile_links_to_settings(client, db):
+    from app.models import CreditCardProfile
+
+    db.delete(db.get(CreditCardProfile, acc(db, "2101")))
+    db.commit()
+    html = client.get("/").text
+    assert card_text(html) == "聯邦信用卡 尚未設定結帳日 前往設定"
+    assert '<a href="/settings">前往設定</a>' in html
+    assert "本期應繳" not in html
+
+
+def test_home_card_section_hidden_without_visible_cards(client, db):
+    db.get(Account, acc(db, "2101")).show_on_home = False
+    db.commit()
+    html = client.get("/").text
+    assert "home-cards" not in html and "金額依記帳資料推算" not in html
+
+
+def test_home_inactive_card_marked(client, db):
+    db.get(Account, acc(db, "2101")).is_active = False
+    db.commit()
+    assert "聯邦信用卡 已停用" in card_text(client.get("/").text)
+
+
+def test_settings_change_shows_on_home(client, db):
+    """設定頁儲存後，首頁用新的結帳日／繳款日重算。"""
+    post_manual(db, date(2026, 10, 10), ("5201", 700), ("2101", -700))
+    csrf = csrf_from(client, "/settings")
+    resp = client.post(
+        f"/settings/cards/{acc(db, '2101')}",
+        data={"csrf_token": csrf, "closing_day": "10", "due_day": "25", "autopay_account_id": ""},
+    )
+    assert resp.status_code == 303
+    assert "繳款日 2026-10-25" in card_text(client.get("/").text)

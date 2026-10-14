@@ -7,6 +7,7 @@
 <nav class="home-actions" aria-label="主要功能">
   <a class="button-link primary" href="/txn/new">快速記一筆</a>
   <a class="button-link" href="/txn">交易列表</a>
+  <a class="button-link" href="/settings">設定</a>
 </nav>
 
 <section class="home-section" aria-labelledby="home-balances-title">
@@ -24,6 +25,32 @@
   <p class="muted">尚未設定首頁帳戶</p>
   {% endif %}
 </section>
+
+{% if summary.cards %}
+<section class="home-section" aria-labelledby="home-cards-title">
+  <h2 class="section-title" id="home-cards-title">信用卡</h2>
+  <ul class="home-cards">
+    {% for card in summary.cards %}
+    <li class="home-card" data-account-id="{{ card.account_id }}">
+      <div class="home-card-name">{{ card.name }}{% if not card.is_active %} <span class="badge">已停用</span>{% endif %}</div>
+      {% if card.due is none %}
+      <p class="muted home-card-line">尚未設定結帳日 <a href="/settings">前往設定</a></p>
+      {% else %}
+      <p class="home-card-line"><span>本期應繳</span> <span class="num home-card-amount">{{ "{:,}".format(card.due.amount_due) }}</span></p>
+      {% if card.due.overpaid > 0 %}
+      <p class="muted home-card-line">已多繳 <span class="num">{{ "{:,}".format(card.due.overpaid) }}</span></p>
+      {% endif %}
+      <p class="muted home-card-line">繳款日 {{ card.due.cycle.due_date.isoformat() }}{% if card.due.amount_due > 0 and not card.is_overdue %}（{% if card.due.cycle.days_until_due == 0 %}今天截止{% else %}還有 {{ card.due.cycle.days_until_due }} 天{% endif %}）{% endif %}</p>
+      {% if card.is_overdue %}
+      <p class="notice notice-warn home-card-overdue" role="status">依目前記帳資料，繳款日已過 {{ card.overdue_days }} 天，尚有 {{ "{:,}".format(card.due.amount_due) }} 元本期應繳。</p>
+      {% endif %}
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="muted home-card-note">金額依記帳資料推算，可能與銀行帳單不同（入帳日、分期、首期期初餘額）。</p>
+</section>
+{% endif %}
 
 <section class="home-section" aria-labelledby="home-status-title">
   <h2 class="section-title" id="home-status-title">系統狀態</h2>
