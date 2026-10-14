@@ -50,8 +50,12 @@ def active_sum_for_accounts(
     start: date | None = None,
     end: date | None = None,
     txn_type: str | None = None,
+    budget_only: bool = False,
 ) -> int:
-    """指定科目在期間內（起訖日都包含）的有效分錄加總，原始正負號；可限定交易類型。"""
+    """指定科目在期間內（起訖日都包含）的有效分錄加總，原始正負號；可限定交易類型。
+
+    budget_only = True：另外排除 exclude_from_budget = 1 的交易（預算已用；P3-3A）。
+    """
     ids = list(account_ids)
     if not ids:
         return 0
@@ -59,6 +63,8 @@ def active_sum_for_accounts(
     stmt = stmt.where(Posting.account_id.in_(ids))
     if txn_type is not None:
         stmt = stmt.where(Transaction.txn_type == txn_type)
+    if budget_only:
+        stmt = stmt.where(Transaction.exclude_from_budget.is_(False))
     return int(db.scalar(_date_range(stmt, start, end)) or 0)
 
 

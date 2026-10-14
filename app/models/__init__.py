@@ -3,6 +3,7 @@
 from app.models.account import Account
 from app.models.audit_log import AuditLog
 from app.models.base import Base
+from app.models.budget import Budget
 from app.models.credit_card_profile import CreditCardProfile
 from app.models.currency import Currency
 from app.models.merchant import Merchant
@@ -19,6 +20,7 @@ __all__ = [
     "Account",
     "AuditLog",
     "Base",
+    "Budget",
     "CreditCardProfile",
     "Currency",
     "Merchant",

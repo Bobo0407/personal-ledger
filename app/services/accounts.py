@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.models import Account, CreditCardProfile
 from app.models.enums import AccountClass, AccountSubtype, TaxCategory
 from app.repositories import accounts as account_repo
+from app.repositories import budgets as budget_repo
 from app.services.errors import MissingSystemAccount, NotFound, RuleViolation
 from app.services.ledger_queries import balance  # noqa: F401  規格 7.1：accounts.balance()
 
@@ -279,6 +280,8 @@ def delete_account(db: Session, account_id: int) -> None:
         raise RuleViolation("CARD_AUTOPAY", f"「{account.name}」是信用卡的扣繳帳戶，不能刪除")
     if account_repo.merchants_using(db, account.id):
         raise RuleViolation("MERCHANT_DEFAULT", f"「{account.name}」是商家的預設科目，不能刪除")
+    if budget_repo.has_budgets(db, account.id):
+        raise RuleViolation("BUDGET_ACCOUNT", f"「{account.name}」已設定預算，不能刪除")
 
     # 信用卡自己的設定（一對一）跟著刪除
     profile = db.get(CreditCardProfile, account.id)

@@ -29,3 +29,16 @@ class MissingSystemAccount(RuntimeError):
             f"找不到系統科目 {system_key}，請先執行 python scripts/seed_master_data.py"
         )
         self.system_key = system_key
+
+
+class InvalidSetting(RuntimeError):
+    """系統設定存在但內容不合法。這是設定資料異常，不靜默改用預設值。
+
+    放在 errors.py 而不是 validation.py：budgets.py 要讀設定，而 validation.py 之後會匯入 budgets，
+    定義在 validation.py 會形成循環匯入。validation.py 仍然 re-export，既有的匯入不受影響。
+    """
+
+    def __init__(self, key: str, value: object, expected: str = "正整數") -> None:
+        super().__init__(f"系統設定 {key} 的值不合法：{value!r}（必須是{expected}）")
+        self.key = key
+        self.value = value

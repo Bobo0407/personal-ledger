@@ -22,7 +22,8 @@ P1_TABLES = {
     "audit_logs",
 }
 P2_TABLES = {"tags", "transaction_tags"}  # 0003（P2 Step 8A）
-ALL_TABLES = P0_TABLES | P1_TABLES | P2_TABLES
+P3_TABLES = {"budgets"}  # 0004（P3-3A）
+ALL_TABLES = P0_TABLES | P1_TABLES | P2_TABLES | P3_TABLES
 
 
 def table_names(db_url: str) -> set[str]:
@@ -83,11 +84,67 @@ def test_0003_downgrade_keeps_transactions_and_reupgrade(alembic_cfg, db_url):
         assert table_names(db_url) == P0_TABLES | P1_TABLES | {"alembic_version"}
         with engine.connect() as conn:
             assert conn.execute(text("SELECT count(*) FROM transactions")).scalar() == 1
-        command.upgrade(alembic_cfg, "head")
+        command.upgrade(alembic_cfg, "0003")
         assert P2_TABLES <= table_names(db_url)
         with engine.connect() as conn:
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0003"
             assert conn.execute(text("SELECT count(*) FROM tags")).scalar() == 0
+            assert conn.execute(text("SELECT count(*) FROM transactions")).scalar() == 1
+    finally:
+        engine.dispose()
+
+
+def test_revision_0003_has_no_budgets(alembic_cfg, db_url):
+    command.upgrade(alembic_cfg, "0003")
+    assert table_names(db_url) == P0_TABLES | P1_TABLES | P2_TABLES | {"alembic_version"}
+
+
+def test_head_is_0004(alembic_cfg):
+    assert ScriptDirectory.from_config(alembic_cfg).get_heads() == ["0004"]
+
+
+def _insert_account_and_budget(conn):
+    conn.execute(
+        text(
+            "INSERT INTO accounts (id, code, name, account_class, is_active, show_on_home,"
+            " sort_order, created_at, updated_at)"
+            " VALUES (1, '5100', '餐飲', 'EXPENSE', 1, 0, 0, 'x', 'x')"
+        )
+    )
+    conn.execute(
+        text(
+            "INSERT INTO budgets (id, account_id, monthly_amount, effective_from,"
+            " created_at, updated_at) VALUES (1, 1, 5000, '2026-10', 'x', 'x')"
+        )
+    )
+
+
+def test_0004_downgrade_keeps_other_data_and_reupgrade(alembic_cfg, db_url):
+    """0003 → 0004 → 0003 → 0004：downgrade 只丟 budgets，帳戶與交易仍在；再升級後預算為空。"""
+    command.upgrade(alembic_cfg, "0003")
+    engine = make_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO transactions (id, txn_date, txn_type, status, source,"
+                    " exclude_from_budget, created_at, updated_at)"
+                    " VALUES (1, '2026-10-14', 'MANUAL', 'POSTED', 'MANUAL', 0, 'x', 'x')"
+                )
+            )
+        command.upgrade(alembic_cfg, "0004")
+        with engine.begin() as conn:
+            _insert_account_and_budget(conn)
+        command.downgrade(alembic_cfg, "0003")
+        assert "budgets" not in table_names(db_url)
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0003"
+            assert conn.execute(text("SELECT count(*) FROM transactions")).scalar() == 1
+            assert conn.execute(text("SELECT count(*) FROM accounts")).scalar() == 1
+        command.upgrade(alembic_cfg, "head")
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0004"
+            assert conn.execute(text("SELECT count(*) FROM budgets")).scalar() == 0
             assert conn.execute(text("SELECT count(*) FROM transactions")).scalar() == 1
     finally:
         engine.dispose()
@@ -131,6 +188,7 @@ def test_models_match_migrations(migrated_engine):
         ("transactions", {"uq_transactions_source_source_ref"}),
         ("postings", {"uq_postings_transaction_id_line_no"}),
         ("tags", {"uq_tags_name"}),
+        ("budgets", {"uq_budgets_account_id_effective_from"}),
     ],
 )
 def test_unique_constraints_have_stable_names(migrated_engine, table, expected):
@@ -175,3 +233,85 @@ def test_no_balance_columns(migrated_engine):
     for table in ALL_TABLES:
         columns = {c["name"] for c in insp.get_columns(table)}
         assert not any("balance" in name for name in columns), table
+
+
+# --- budgets（0004）-----------------------------------------------------------------------
+
+
+def test_budgets_columns_store_no_totals(migrated_engine):
+    """預算只存金額與生效月；已用金額、使用率不儲存（P3-3A）。"""
+    columns = {c["name"] for c in inspect(migrated_engine).get_columns("budgets")}
+    assert columns == {
+        "id",
+        "account_id",
+        "monthly_amount",
+        "effective_from",
+        "created_at",
+        "updated_at",
+    }
+
+
+def test_budgets_foreign_key_does_not_cascade(migrated_engine):
+    fks = inspect(migrated_engine).get_foreign_keys("budgets")
+    assert [fk["referred_table"] for fk in fks] == ["accounts"]
+    assert not fks[0]["options"].get("ondelete")
+
+
+def _run(migrated_engine, sql: str, **params):
+    with migrated_engine.begin() as conn:
+        conn.execute(text(sql), params)
+
+
+def _seed_account(migrated_engine):
+    _run(
+        migrated_engine,
+        "INSERT INTO accounts (id, code, name, account_class, is_active, show_on_home,"
+        " sort_order, created_at, updated_at)"
+        " VALUES (1, '5100', '餐飲', 'EXPENSE', 1, 0, 0, 'x', 'x')",
+    )
+
+
+INSERT_BUDGET = (
+    "INSERT INTO budgets (account_id, monthly_amount, effective_from, created_at, updated_at)"
+    " VALUES (:a, :m, :e, 'x', 'x')"
+)
+
+
+def test_budgets_accepts_valid_row(migrated_engine):
+    _seed_account(migrated_engine)
+    _run(migrated_engine, INSERT_BUDGET, a=1, m=5000, e="2026-10")
+    _run(migrated_engine, INSERT_BUDGET, a=1, m=6000, e="2026-12")
+
+
+@pytest.mark.parametrize("amount", [0, -1])
+def test_budgets_rejects_non_positive_amount(migrated_engine, amount):
+    from sqlalchemy.exc import IntegrityError
+
+    _seed_account(migrated_engine)
+    with pytest.raises(IntegrityError):
+        _run(migrated_engine, INSERT_BUDGET, a=1, m=amount, e="2026-10")
+
+
+@pytest.mark.parametrize("month", ["2026-13", "2026-00", "2026-1", "202610", "2026-10-01", ""])
+def test_budgets_rejects_bad_month_format(migrated_engine, month):
+    from sqlalchemy.exc import IntegrityError
+
+    _seed_account(migrated_engine)
+    with pytest.raises(IntegrityError):
+        _run(migrated_engine, INSERT_BUDGET, a=1, m=5000, e=month)
+
+
+def test_budgets_unique_per_account_and_month(migrated_engine):
+    from sqlalchemy.exc import IntegrityError
+
+    _seed_account(migrated_engine)
+    _run(migrated_engine, INSERT_BUDGET, a=1, m=5000, e="2026-10")
+    with pytest.raises(IntegrityError):
+        _run(migrated_engine, INSERT_BUDGET, a=1, m=7000, e="2026-10")
+
+
+def test_budgets_requires_existing_account(migrated_engine):
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError):
+        _run(migrated_engine, INSERT_BUDGET, a=999, m=5000, e="2026-10")

@@ -72,6 +72,7 @@ from app.repositories import accounts as account_repo
 from app.repositories import ledger as ledger_repo
 from app.repositories import tags as tag_repo
 from app.services.drafts import EntryDraft, ExistingTransaction, PostingDraft, draft_from_model
+from app.services.errors import InvalidSetting  # noqa: F401  （re-export：既有匯入維持相容）
 from app.services.issues import Issue
 from app.services.ledger_queries import raw_balance
 from app.services.txn_structure import check_structure
@@ -105,15 +106,6 @@ class ValidationResult:
 
     def codes(self) -> set[str]:
         return {i.code for i in (*self.errors, *self.confirmations, *self.notices)}
-
-
-class InvalidSetting(RuntimeError):
-    """系統設定存在但內容不合法。這是設定資料異常，不靜默改用預設值。"""
-
-    def __init__(self, key: str, value: object) -> None:
-        super().__init__(f"系統設定 {key} 的值不合法：{value!r}（必須是正整數）")
-        self.key = key
-        self.value = value
 
 
 class ValidationFailed(Exception):
