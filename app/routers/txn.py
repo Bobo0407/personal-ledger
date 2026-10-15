@@ -47,6 +47,8 @@ P2 Step 4A：交易明細、修改（只限快速記帳格式的支出）、軟�
   再走 transactions.update_transaction()；422／409 與新增相同；成功後回到明細
 - POST /txn/{id}/delete、/restore：transactions.delete_transaction()／restore_transaction()；
   P1 擋下時回 422 並在明細頁顯示原因；成功後回到明細
+- P3-3C：提醒（V13、V14）與「這筆交易計入的預算卡片」一併顯示；儲存並回首頁、刪除會離開頁面，
+  提醒用 app/flash.py 的一次性 cookie 帶到下一頁（首頁、明細頁）顯示一次。
 - 修改、還原成功時，P1 會回傳提醒（PostResult.notices，例如 V13）：不導頁，
   直接回傳明細內容並顯示提醒（修改用 HX-Retarget 換掉整個 main、HX-Push-Url 改網址）
 - NotFound 只在這個 router 對應成 404，不做全域框架
@@ -83,7 +85,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
-from app import clock, entry_run
+from app import clock, entry_run, flash
 from app.db import get_db
 from app.deps import require_user
 from app.models import User
@@ -98,6 +100,7 @@ from app.schemas.txn import (
 )
 from app.services import (
     audit_history,
+    budgets,
     entry_options,
     merchants,
     search,
@@ -580,12 +583,15 @@ def create_txn(
         # 儲存並回首頁：離開連續補記，結束這一輪（P2 Step 10）
         home = Response(status_code=200, headers={"HX-Redirect": "/"})
         entry_run.clear_cookie(home)
+        # V13／V14 提醒帶過這次 redirect，首頁顯示一次（P3-3C；不碰 ledger_run）
+        flash.set_cookie(home, result.notices, request.app.state.settings)
         return home
 
     # 儲存並記下一筆：保留這個類型的「日期 + 錢從哪裡來」，其他欄位清空，並換新的送出權杖
     next_values = _blank_values(txn_type)
     for key in KEPT_AFTER_SAVE[txn_type]:
         next_values[key] = values[key]
+    cards = () if result.replayed else budgets.cards_for_transaction(db, result.transaction_id)
     if result.replayed:
         # 同一個權杖已經建立過交易：這次沒有寫入，只告知第一次建立的那筆
         saved = {"transaction_id": result.transaction_id, "replayed": True}
@@ -595,7 +601,8 @@ def create_txn(
             "replayed": False,
             "account_id": form.account_id,
             "amount": form.amount,
-            "notices": result.notices,  # V13 等「提醒」：已經儲存，只顯示不阻擋
+            "notices": result.notices,  # V13、V14 等「提醒」：已經儲存，只顯示不阻擋
+            "budget_cards": cards,
         }
     else:
         # 讀回實際存下的交易：轉入信用卡時 P1 已記成繳卡費（D9），Web 不自己判斷
@@ -606,6 +613,7 @@ def create_txn(
             "label": detail.type_label,
             "amount": detail.magnitude,
             "notices": result.notices,
+            "budget_cards": cards,
         }
     # 交易已經寫入（含重送：第一次的那筆）才加入「本次」；集合語意，重送不會多算，
     # 也能補上第一次回應遺失、Cookie 沒寫到的那筆。422、409、返回修改在上面就已經離開。
@@ -697,6 +705,7 @@ def _detail(
     status_code: int = 200,
     form_errors: list[ErrorItem] | None = None,
     notices: tuple[Issue, ...] = (),
+    budget_cards: tuple[budgets.BudgetCard, ...] = (),
     done_message: str | None = None,
     htmx_template: str = "partials/txn_detail_body.html",
     headers: dict[str, str] | None = None,
@@ -714,6 +723,7 @@ def _detail(
             "history": audit_history.history(db, txn_id),
             "form_errors": form_errors or [],
             "notices": notices,
+            "budget_cards": budget_cards,
             "done_message": done_message,
             # 只有「修改成功、換掉整個 main」的 HTMX 回應需要一併換掉頁面標題
             "replace_title": template == "partials/txn_detail_main.html",
@@ -732,7 +742,10 @@ def show_txn(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, Depends(require_user)],
 ) -> Response:
-    return _detail(request, db, txn_id)
+    # 刪除後 redirect 過來：顯示一次 flash 提醒（V14），重新整理就不再出現
+    response = _detail(request, db, txn_id, notices=flash.read(request))
+    flash.pop(request, response)
+    return response
 
 
 def _keep(values: dict[str, str] | None) -> dict[str, int]:
@@ -904,6 +917,7 @@ def edit_txn(
         db,
         txn_id,
         notices=result.notices,
+        budget_cards=budgets.cards_for_transaction(db, result.transaction_id),
         done_message="已儲存修改。",
         htmx_template="partials/txn_detail_main.html",
         headers={
@@ -943,7 +957,9 @@ def _refund_form(
     )
 
 
-def _after_refund(request: Request, db: Session, refund_id: int, notices, message: str):
+def _after_refund(
+    request: Request, db: Session, refund_id: int, notices, message: str, *, cards=()
+):
     """回到退款所屬的原交易明細。原交易 id 從實際存下（或重送命中）的退款讀回，不看網址。"""
     refund = txn_detail.get_detail(db, refund_id)
     original_id = refund.related_txn_id
@@ -952,6 +968,7 @@ def _after_refund(request: Request, db: Session, refund_id: int, notices, messag
         db,
         original_id,
         notices=notices,
+        budget_cards=cards,
         done_message=message,
         htmx_template="partials/txn_detail_main.html",
         headers={
@@ -1073,6 +1090,7 @@ def create_refund(
         result.transaction_id,
         result.notices,
         f"已退款 {refund.magnitude:,} 元。",
+        cards=budgets.cards_for_transaction(db, result.transaction_id),
     )
 
 
@@ -1089,12 +1107,15 @@ def delete_txn(
 ) -> Response:
     """軟刪除（只設 deleted_at）。已有有效退款的支出由 P1 回 REFUND_EXISTS。"""
     try:
-        transactions.delete_transaction(db, txn_id, user_id=user.id)
+        result = transactions.delete_transaction(db, txn_id, user_id=user.id)
     except NotFound:
         return _not_found(request, txn_id)
     except ValidationFailed as exc:
         return _detail(request, db, txn_id, status_code=422, form_errors=_lifecycle_errors(exc))
-    return _redirect(request, f"/txn/{txn_id}")
+    response = _redirect(request, f"/txn/{txn_id}")
+    # 刪除退款可能讓預算跨過門檻（V14）：提醒帶過 redirect，明細頁顯示一次
+    flash.set_cookie(response, result.notices, request.app.state.settings)
+    return response
 
 
 @router.post("/txn/{txn_id:int}/restore")
@@ -1113,7 +1134,14 @@ def restore_txn(
     except ValidationFailed as exc:
         return _detail(request, db, txn_id, status_code=422, form_errors=_lifecycle_errors(exc))
     # 還原表單的 HTMX 目標就是 #txn-detail（網址已經是 /txn/{id}）：直接回傳明細並顯示提醒
-    return _detail(request, db, txn_id, notices=result.notices, done_message="已還原。")
+    return _detail(
+        request,
+        db,
+        txn_id,
+        notices=result.notices,
+        budget_cards=budgets.cards_for_transaction(db, result.transaction_id),
+        done_message="已還原。",
+    )
 
 
 @router.get("/txn/deleted")

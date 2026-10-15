@@ -23,8 +23,13 @@
   OVER：used ≥ budget（100% 固定）；WARN：used × 100 ≥ alert_pct × budget；否則 OK。
 - budget_alert_pct 來自 settings（預設 80，有效範圍 1–99）；存在但不合法就 InvalidSetting。
 
-V14（跨過 80%／100%）
-- 這裡只提供純函式 crossing()；草稿差額與 create／edit／restore 接線留 P3-3C。
+V14（跨過 80%／100%；P3-3C）
+- crossing() 是純函式（P3-3A）；crossings_for_change() 負責算「這次寫入」讓哪些預算跨過門檻。
+- 預算 key = （第一層費用科目, 交易日期所在月份）；用該月自己的生效版本，沒有 today 截止。
+- contribution = 該交易落在該第一層科目子樹的分錄淨額（不依 txn_type；exclude_from_budget → 沒有）。
+- before = 寫入前 DB 的 used；after = before − 舊 contribution + 新 contribution：
+  新增（舊=無）、修改（舊→新）、還原（舊=無；已刪除的不在 used 裡）、刪除（新=無）。
+- after 沒有比 before 高（delta ≤ 0）就不可能跨過，直接略過，也不讀 budget_alert_pct。
 
 畫面用的資料（P3-3B）
 - BudgetCard：把 BudgetProgress 加上「顯示狀態」（ok／warn／used_up／over）與超支金額，
@@ -42,12 +47,13 @@ from enum import StrEnum
 from sqlalchemy.orm import Session
 
 from app import clock
-from app.models import Account, Budget, Setting
+from app.models import Account, Budget, Setting, Transaction
 from app.models.enums import AccountClass
 from app.repositories import accounts as account_repo
 from app.repositories import budgets as budget_repo
 from app.repositories import ledger as ledger_repo
 from app.services.accounts import get_account
+from app.services.drafts import EntryDraft, ExistingTransaction
 from app.services.errors import InvalidSetting, RuleViolation
 from app.services.ledger_queries import subtree_ids
 
@@ -260,6 +266,11 @@ class BudgetCard:
         return "warn" if self.progress.status == BudgetStatus.WARN else "ok"
 
     @property
+    def month_label(self) -> str:
+        """不是目前月份時才有值（例如未來日期的交易），畫面照印，不做判斷。"""
+        return "" if self.progress.month == current_month() else self.progress.month
+
+    @property
     def over_amount(self) -> int:
         return max(-self.progress.remaining, 0)
 
@@ -331,3 +342,123 @@ def settings_rows(db: Session, month: str | None = None) -> BudgetSettings:
             )
         )
     return BudgetSettings(month=month, rows=tuple(rows), progress_error=error)
+
+
+# --- V14：這次寫入讓哪些預算跨過門檻（P3-3C）---------------------------------------------
+
+
+@dataclass(frozen=True)
+class BudgetCrossing:
+    account_id: int
+    account_name: str
+    month: str  # YYYY-MM，交易日期所在月份
+    threshold: int  # 100，或 budget_alert_pct
+    used: int  # 這次寫入之後的 used
+    budget: int
+
+
+@dataclass(frozen=True)
+class BudgetChange:
+    crossings: tuple[BudgetCrossing, ...] = ()
+    config_error: bool = False  # budget_alert_pct 不合法，無法判斷（不 fallback）
+
+
+def _expense_root(accounts: dict[int, Account], account_id: int | None) -> int | None:
+    """科目所屬的第一層費用科目 id；不在費用科目底下回傳 None。"""
+    account = accounts.get(account_id) if account_id is not None else None
+    while account is not None and account.parent_id is not None:
+        account = accounts.get(account.parent_id)
+    if account is None or account.account_class != AccountClass.EXPENSE:
+        return None
+    return account.id
+
+
+def _contributions(
+    tx: EntryDraft | ExistingTransaction | None, accounts: dict[int, Account]
+) -> dict[tuple[int, str], int]:
+    """{(第一層費用科目 id, 月份): 分錄淨額}。exclude_from_budget 的交易沒有任何 contribution。"""
+    if tx is None or tx.exclude_from_budget or tx.txn_date is None:
+        return {}
+    month = month_of(tx.txn_date)
+    out: dict[tuple[int, str], int] = {}
+    for posting in tx.postings:
+        root = _expense_root(accounts, posting.account_id)
+        if root is not None:
+            out[(root, month)] = out.get((root, month), 0) + posting.amount
+    return out
+
+
+def crossings_for_change(
+    db: Session,
+    new: EntryDraft | ExistingTransaction | None,
+    old: EntryDraft | ExistingTransaction | None,
+) -> BudgetChange:
+    """新增（old=None）、修改、還原（old=None）、刪除（new=None）讓哪些預算跨過 80%／100%。
+
+    只讀。排序：跨過 100% 的在前，其次依科目順序（sort_order、code），最後依月份。
+    """
+    accounts_in_order = account_repo.list_all(db)
+    accounts = {a.id: a for a in accounts_in_order}
+    order = {a.id: i for i, a in enumerate(accounts_in_order)}
+    after, before = _contributions(new, accounts), _contributions(old, accounts)
+
+    crossings: list[BudgetCrossing] = []
+    config_error = False
+    alert: int | None = None
+    for key in sorted(set(after) | set(before)):
+        delta = after.get(key, 0) - before.get(key, 0)
+        if delta <= 0:
+            continue  # 沒有增加用量就不可能跨過門檻
+        root_id, month = key
+        version = _latest_per_account(budget_repo.in_force_candidates(db, month, root_id)).get(
+            root_id
+        )
+        if version is None:
+            continue
+        if alert is None:
+            try:
+                alert = budget_alert_pct(db)
+            except InvalidSetting:
+                config_error = True  # 不 fallback 成 80；整筆只記一次
+                break
+        first, last = month_range(month)
+        used = ledger_repo.active_sum_for_accounts(
+            db, subtree_ids(db, root_id), first, last, budget_only=True
+        )
+        threshold = crossing(used, used + delta, version.monthly_amount, alert)
+        if threshold is not None:
+            crossings.append(
+                BudgetCrossing(
+                    root_id,
+                    accounts[root_id].name,
+                    month,
+                    threshold,
+                    used + delta,
+                    version.monthly_amount,
+                )
+            )
+    crossings.sort(key=lambda c: (c.threshold != FULL_PCT, order[c.account_id], c.month))
+    return BudgetChange(tuple(crossings), config_error)
+
+
+def cards_for_transaction(db: Session, txn_id: int) -> tuple[BudgetCard, ...]:
+    """儲存後顯示：這筆交易「目前」計入的預算卡片（edit 之前的舊 key 不顯示）。
+
+    排序同 V14 notices。budget_alert_pct 不合法時回傳空（設定異常由 notice 與 /budgets 說明）。
+    """
+    txn = db.get(Transaction, txn_id)
+    if txn is None:
+        return ()
+    accounts_in_order = account_repo.list_all(db)
+    accounts = {a.id: a for a in accounts_in_order}
+    order = {a.id: i for i, a in enumerate(accounts_in_order)}
+    keys = _contributions(ExistingTransaction.from_model(txn), accounts)
+    cards: list[BudgetCard] = []
+    try:
+        for root_id, month in sorted(keys, key=lambda k: (order[k[0]], k[1])):
+            progress = account_progress(db, root_id, month)
+            if progress is not None:
+                cards.append(BudgetCard(progress))
+    except InvalidSetting:
+        return ()
+    return tuple(cards)

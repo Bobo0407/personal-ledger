@@ -4,6 +4,11 @@
    金額與正負號由 services/home.py 決定，這裡只顯示；不提供合計（上下層科目會重複計算）。 #}
 <h1>記帳</h1>
 
+{# 「儲存並回首頁」帶過來的 V13／V14 提醒（app/flash.py）：顯示一次 #}
+{% for notice in flash_notices or [] %}
+<p class="notice notice-warn" role="status" data-code="{{ notice.code }}">{{ notice.message }}</p>
+{% endfor %}
+
 <nav class="home-actions" aria-label="主要功能">
   <a class="button-link primary" href="/txn/new">快速記一筆</a>
   <a class="button-link" href="/txn">交易列表</a>

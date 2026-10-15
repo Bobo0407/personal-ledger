@@ -366,8 +366,8 @@ def update_transaction(
     return ledger.update(db, txn_id, draft, confirmed=confirmed, user_id=user_id)
 
 
-def delete_transaction(db: Session, txn_id: int, *, user_id: int | None = None) -> None:
-    ledger.soft_delete(db, txn_id, user_id=user_id)
+def delete_transaction(db: Session, txn_id: int, *, user_id: int | None = None) -> PostResult:
+    return ledger.soft_delete(db, txn_id, user_id=user_id)
 
 
 def restore_transaction(db: Session, txn_id: int, *, user_id: int | None = None) -> PostResult:

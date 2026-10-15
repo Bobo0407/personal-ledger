@@ -9,6 +9,14 @@
 {% for notice in notices or [] %}
 <p class="notice notice-warn" data-code="{{ notice.code }}">{{ notice.message }}</p>
 {% endfor %}
+{# 這筆交易計入的預算最新進度（數字都來自 services/budgets.py） #}
+{% if budget_cards %}
+<ul class="budget-list" data-budget-cards>
+  {% for card in budget_cards %}
+  <li>{% include "partials/budget_card.html" %}</li>
+  {% endfor %}
+</ul>
+{% endif %}
 
 {% if detail.is_deleted %}
 <p class="notice notice-warn" data-state="deleted">

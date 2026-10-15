@@ -48,7 +48,7 @@ P1 也先在 service 層完成了 T24（修改與稽核）、T25（刪除與還�
 | V11 | 日期晚於今天（修改時只在日期改變時） | 確認 | `validation.py` | `integration/test_ledger_post.py::test_v11_future_date_requires_confirmation`、`integration/test_transaction_lifecycle.py::test_v11_only_when_date_changes_to_future` |
 | V12 | 同日同商家同金額 | 確認 | **P2** | — |
 | V13 | 現金／銀行截至今天的餘額因這筆變少且 < 0 | 提醒 | `validation.py` `negative_balance_notices` | `integration/test_ledger_post.py::test_v13_*`、`integration/test_transaction_lifecycle.py::test_v13_*` |
-| V14 | 預算使用率跨過 80%／100% | 提醒 | **P3** | — |
+| V14 | 預算使用率跨過 80%／100% | 提醒 | `validation.py` `budget_notices`（算法在 `budgets.crossings_for_change`，P3-3C） | `integration/test_budget_notices.py`、`integration/test_web_budget_notices.py` |
 | V15 | ADJUSTMENT 備註必填、只調整一個資產或負債 | 擋下 | `validation.py` | `integration/test_special_transactions.py::test_t33_missing_note_is_v15`、`test_v15_handwritten_drafts` |
 | POSTING_AMOUNT | 分錄金額是不為 0 的整數 | 擋下 | `validation.py` | `integration/test_ledger_post.py::test_posting_amount_invariant` |
 | TXN_TYPE／LINE_ROLE | 不認識的交易類型或分錄角色 | 擋下 | `validation.py` | `integration/test_ledger_post.py::test_unknown_txn_type_and_line_role` |
@@ -117,7 +117,7 @@ P1 也先在 service 層完成了 T24（修改與稽核）、T25（刪除與還�
 | F12 | 分期付款全額入帳 + 利息 | 完成（T09；期數在 V1.5） |
 | F13 | 多分錄交易 | 完成（ManualEntry、T08、T10） |
 | F14 | 應收／應付 | 完成（最末層科目 + 轉帳） |
-| F30 | 資料驗證規則 | P1 適用部分完成：V01–V07、V09–V11、V13、V15；V08 部分；V12 在 P2、V14 在 P3 |
+| F30 | 資料驗證規則 | P1 適用部分完成：V01–V07、V09–V11、V13、V15；V08 部分；V12 在 P2、V14 在 P3（P3-3C 完成） |
 
 ## 7. 架構守門（`unit/test_architecture.py`）
 

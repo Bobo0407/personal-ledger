@@ -3,7 +3,7 @@
 {% set p = card.progress %}
 <div class="budget-card" data-account-id="{{ p.account_id }}" data-state="{{ card.state }}">
   <div class="budget-card-head">
-    <span class="budget-card-name">{{ p.account_name }}{% if not p.is_active %} <span class="badge">已停用</span>{% endif %}</span>
+    <span class="budget-card-name">{{ p.account_name }}{% if card.month_label %}（{{ card.month_label }}）{% endif %}{% if not p.is_active %} <span class="badge">已停用</span>{% endif %}</span>
     {% if card.state == "warn" %}<span class="badge budget-flag">接近上限</span>
     {% elif card.state == "over" %}<span class="badge budget-flag">已超支</span>
     {% elif card.state == "used_up" %}<span class="badge budget-flag">已用完</span>{% endif %}

@@ -24,6 +24,9 @@ notices（儲存後提示）。
   新增與修改共用；修改時排除自己。還原時的 V08 見 validate_restore()。
 - V13（提醒）：CASH／BANK 帳戶「截至今天」的餘額因為這筆交易而變少，且結果 < 0。
   未來日期的交易不影響今天的餘額，所以不會觸發。
+- V14（提醒，P3-3C）：這次新增、修改、還原、刪除讓某個第一層費用科目的「該月」預算使用率
+  跨過 80%（budget_alert_pct）或 100%。算法與 threshold 在 services/budgets.py，這裡只轉成訊息。
+  budget_alert_pct 不合法時不 fallback、不擋儲存，改回 BUDGET_ALERT_CONFIG 提醒。
 - TXN_STRUCTURE（Step 4、5）：依 txn_type 檢查分錄結構，是 builder 之外的第二道防線，
   見 txn_structure.py。
 - V15（Step 5）：ADJUSTMENT 備註必填（field=description），且只能調整一個資產或負債帳戶，
@@ -71,6 +74,7 @@ from app.models.enums import (
 from app.repositories import accounts as account_repo
 from app.repositories import ledger as ledger_repo
 from app.repositories import tags as tag_repo
+from app.services import budgets
 from app.services.drafts import EntryDraft, ExistingTransaction, PostingDraft, draft_from_model
 from app.services.errors import InvalidSetting  # noqa: F401  （re-export：既有匯入維持相容）
 from app.services.issues import Issue
@@ -158,6 +162,7 @@ def validate(
     if not out.errors:
         _check_confirmations(db, draft, out, existing)
         out.notices.extend(negative_balance_notices(db, draft, existing))
+        out.notices.extend(budget_notices(db, draft, existing))
     return out.result()
 
 
@@ -189,6 +194,20 @@ def validate_restore(db: Session, txn: Transaction) -> ValidationResult:
     _check_refund(db, draft, out, txn.id)
     if not out.errors:
         out.notices.extend(negative_balance_notices(db, draft, None))
+        if txn.status == TxnStatus.POSTED.value:  # 草稿不計入預算
+            out.notices.extend(budget_notices(db, draft, None))
+    return out.result()
+
+
+def validate_delete(db: Session, txn: Transaction) -> ValidationResult:
+    """軟刪除前的提醒（只有 notices，沒有 errors）。
+
+    刪除退款等負 contribution 的交易會讓預算用量上升，可能跨過 80%／100%（V14）。"""
+    out = _Collector()
+    if txn.status == TxnStatus.POSTED.value:
+        out.notices.extend(
+            budget_notices(db, None, ExistingTransaction.from_model(txn), verb="已刪除")
+        )
     return out.result()
 
 
@@ -490,6 +509,39 @@ def negative_balance_notices(
                 Issue("V13", f"{account.name}餘額變成 −{abs(after):,}，可能漏記了提款或收入")
             )
     return notices
+
+
+def budget_notices(
+    db: Session,
+    new: EntryDraft | ExistingTransaction | None,
+    old: EntryDraft | ExistingTransaction | None,
+    *,
+    verb: str = "已儲存",
+) -> list[Issue]:
+    """V14：真正跨過門檻的預算各一則；設定異常整筆只有一則 BUDGET_ALERT_CONFIG（不冒充 V14）。"""
+    change = budgets.crossings_for_change(db, new, old)
+    notices = [Issue("V14", _crossing_message(c)) for c in change.crossings]
+    if change.config_error:
+        notices.append(
+            Issue(
+                "BUDGET_ALERT_CONFIG",
+                f"預算提醒設定異常，這筆交易{verb}，但無法判斷是否跨過預算門檻。",
+            )
+        )
+    return notices
+
+
+def _crossing_message(c: budgets.BudgetCrossing) -> str:
+    name = c.account_name
+    if c.month != budgets.current_month():
+        name += f"（{c.month}）"  # 未來或補記的月份才標示
+    used, budget = f"{c.used:,}", f"{c.budget:,}"
+    if c.threshold != budgets.FULL_PCT:
+        pct = budgets.usage_pct(c.used, c.budget)
+        return f"{name} 預算已用 {pct}%（{used} / {budget}），接近上限"
+    if c.used == c.budget:
+        return f"{name} 預算已用完（{used} / {budget}）"
+    return f"{name} 預算已超支 {c.used - c.budget:,} 元（已用 {used} / {budget}）"
 
 
 # --- 退款（Step 6）---------------------------------------------------------------

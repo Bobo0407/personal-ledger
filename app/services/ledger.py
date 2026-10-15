@@ -16,6 +16,7 @@ Step 6 的生命週期（全部在同一個資料庫交易內：異動 + 稽核�
   驗證時帶入修改前的內容（D14、U3、U4、U10）；通過後刪掉舊分錄、寫入新分錄（line_no 重新從 1 編），
   表頭的 status、source、source_ref 不變。稽核 UPDATE 的 before／after 是完整快照。
 - soft_delete()：只設 deleted_at，分錄保留（之後由 active_postings() 自動排除）。
+  回傳 PostResult，notices 只有 V14（P3-3C）。
   已有有效退款的支出不能刪除（REFUND_EXISTS），要先刪退款。
 - restore()：清除 deleted_at，重新檢查（validate_restore）。
 餘額不另外存，刪除、還原後的餘額一律由 active_postings() 即時計算。
@@ -45,6 +46,7 @@ from app.services.validation import (
     ValidationResult,
     invoice_taken_issue,
     validate,
+    validate_delete,
     validate_restore,
 )
 
@@ -291,14 +293,15 @@ def update(
     return PostResult(txn.id, result.notices)
 
 
-def soft_delete(db: Session, txn_id: int, *, user_id: int | None = None) -> None:
-    """軟刪除：只設 deleted_at，分錄保留。"""
+def soft_delete(db: Session, txn_id: int, *, user_id: int | None = None) -> PostResult:
+    """軟刪除：只設 deleted_at，分錄保留。回傳的 notices 只有 V14（刪除退款可能讓預算跨過門檻）。"""
     _ensure_clean(db)
     txn = _get(db, txn_id)
     if txn.deleted_at is not None:
         raise _fail("TXN_DELETED", "這筆交易已經刪除")
     if txn.txn_type == TxnType.EXPENSE and ledger_repo.active_refunded_amount(db, txn.id) > 0:
         raise _fail("REFUND_EXISTS", "這筆支出已有退款，請先刪除退款")
+    result = validate_delete(db, txn)  # 只讀；必須在 deleted_at 寫入之前算（用量要含這筆）
     try:
         before = transaction_snapshot(db, txn)
         txn.deleted_at = clock.now_iso()
@@ -316,6 +319,7 @@ def soft_delete(db: Session, txn_id: int, *, user_id: int | None = None) -> None
     except Exception:
         db.rollback()
         raise
+    return PostResult(txn.id, result.notices)
 
 
 def restore(db: Session, txn_id: int, *, user_id: int | None = None) -> PostResult:

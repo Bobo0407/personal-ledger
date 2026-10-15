@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
+from app import flash
 from app.db import get_db
 from app.deps import require_user
 from app.models import User
@@ -25,4 +26,10 @@ def home(
     db: Annotated[Session, Depends(get_db)],
 ) -> Response:
     summary = home_service.home_summary(db)
-    return render(request, "pages/home.html", {"user": user, "summary": summary})
+    response = render(
+        request,
+        "pages/home.html",
+        {"user": user, "summary": summary, "flash_notices": flash.read(request)},
+    )
+    flash.pop(request, response)  # 一次性提醒：顯示過就清掉，重新整理不再出現
+    return response

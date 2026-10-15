@@ -22,6 +22,13 @@
 <p class="notice notice-warn" data-code="{{ notice.code }}">{{ notice.message }}</p>
 {% endfor %}
 {% endif %}
+{% if saved and not saved.replayed and saved.budget_cards %}
+<ul class="budget-list" data-budget-cards>
+  {% for card in saved.budget_cards %}
+  <li>{% include "partials/budget_card.html" %}</li>
+  {% endfor %}
+</ul>
+{% endif %}
 
 {# 500 錯誤片段（_server_error）會換進這裡，表單內容不會被清掉 #}
 <div id="txn-status" aria-live="polite"></div>
