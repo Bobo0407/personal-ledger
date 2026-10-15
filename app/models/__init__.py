@@ -2,6 +2,7 @@
 
 from app.models.account import Account
 from app.models.audit_log import AuditLog
+from app.models.backup_run import BackupRun
 from app.models.base import Base
 from app.models.budget import Budget
 from app.models.credit_card_profile import CreditCardProfile
@@ -19,6 +20,7 @@ from app.models.user_session import UserSession
 __all__ = [
     "Account",
     "AuditLog",
+    "BackupRun",
     "Base",
     "Budget",
     "CreditCardProfile",

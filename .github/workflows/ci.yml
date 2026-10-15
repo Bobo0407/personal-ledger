@@ -26,6 +26,14 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # 備份測試要用真的 age（P3-5A）。沒裝成功就讓這一步失敗；測試在 CI 缺 age 時也會失敗，不會 skip
+      - name: Install age
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y age
+          age --version
+          age-keygen --version
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

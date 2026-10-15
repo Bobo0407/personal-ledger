@@ -88,6 +88,14 @@
     </ul>
   </div>
   {% endif %}
+  {# 備份狀態（P3-5A）：訊息與等級由 services/backup.backup_status() 決定，這裡只印 #}
+  {% if summary.backup_line.level == "alert" %}
+  <p class="alert home-backup" role="alert" data-level="alert">{{ summary.backup_line.message }}</p>
+  {% elif summary.backup_line.level == "warn" %}
+  <p class="notice notice-warn home-backup" role="status" data-level="warn">{{ summary.backup_line.message }}</p>
+  {% else %}
+  <p class="muted home-status-line home-backup" data-level="ok">{{ summary.backup_line.message }}</p>
+  {% endif %}
 </section>
 
 <p>已登入：<strong>{{ user.username }}</strong></p>

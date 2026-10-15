@@ -45,7 +45,8 @@ models/        資料表定義；schema 變更一律透過 Alembic（migrations/
   [003 帳務寫入路徑](docs/adr/ADR-003-ledger-write-path.md)、
   [004 主資料](docs/adr/ADR-004-master-data.md)、
   [005 交易生命週期](docs/adr/ADR-005-transaction-lifecycle.md)、
-  [006 退款模型](docs/adr/ADR-006-refund-model.md)
+  [006 退款模型](docs/adr/ADR-006-refund-model.md)、
+  [008 備份加密（age）](docs/adr/ADR-008-backup-encryption-age.md)
 - [P1 決策紀錄](docs/decisions/p1.md)
 - [P1 規則與測試對照](docs/p1-rules.md)
 
@@ -122,6 +123,35 @@ uvicorn app.main:create_app --factory --reload
 ```
 
 開啟 http://127.0.0.1:8000/ 會被導向登入頁。應用程式日誌寫在 `LOG_DIR/app.log`（預設 `./logs`），每天輪替、保留 14 天。
+
+## 本機加密備份（P3-5A）
+
+備份和網站分開執行，網站沒開也能備份。流程：SQLite backup API → 記憶體快照 → gzip → [age](https://github.com/FiloSottile/age) 加密 → 檔案
+（磁碟上不會出現未加密的資料庫或壓縮檔）。排程（systemd timer）與上傳 Google Drive 分別在 P3-6、P3-5B。
+
+一次性準備：
+
+```powershell
+winget install FiloSottile.age          # Linux：sudo apt install age
+age-keygen -o ledger-backup-key.txt      # 私鑰檔：存進密碼管理員後，從這台機器刪除
+```
+
+`age-keygen` 會印出 `Public key: age1…`。只把**公鑰**放進 `.env`（私鑰絕對不要放在伺服器或專案目錄）：
+
+```
+BACKUP_DIR=./data/backups
+BACKUP_AGE_RECIPIENT=age1…
+```
+
+執行備份與還原驗證（不需要 `SECRET_KEY`）：
+
+```bash
+python scripts/backup.py
+python scripts/restore_check.py --backup data/backups/ledger-YYYYMMDD-HHMMSS.db.gz.age --identity <私鑰檔>
+```
+
+結束碼：`0` 成功；`1` 備份失敗，已盡力寫入 FAILED 紀錄；`2` 無法保證有紀錄（來源資料庫不存在、或 backup_runs 寫不進去）。
+保留規則：每日備份 30 天，加上每月第一份 12 個月。首頁「系統狀態」會顯示最後一次備份的狀態。
 
 ## 檢查
 

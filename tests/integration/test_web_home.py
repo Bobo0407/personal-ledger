@@ -440,3 +440,82 @@ def test_home_budget_invalid_alert_pct_shows_error_only_there(client, db):
     assert 'data-code="BUDGET_SETTING"' in resp.text
     assert "budget-card" not in resp.text
     assert "帳戶餘額" in resp.text
+
+
+# --- 備份狀態（P3-5A）-----------------------------------------------------------------------
+
+
+def _backup_line(html: str) -> str:
+    match = re.search(r'<p [^>]*class="[^"]*home-backup[^"]*"[^>]*>(.*?)</p>', html, re.S)
+    assert match, "找不到備份狀態那一行"
+    return match.group(0)
+
+
+def _add_backup(db, status="SUCCESS", finished="2026-10-15T03:00:00+08:00", **fields):
+    from tests.backup_helpers import add_run
+
+    return add_run(db, status, finished, **fields)
+
+
+def test_home_backup_no_record_is_yellow_status_not_alert(client):
+    line = _backup_line(client.get("/").text)
+    assert 'data-level="warn"' in line and "尚未有備份紀錄" in line
+    assert 'role="status"' in line and 'role="alert"' not in line
+
+
+def test_home_backup_recent_success_is_a_quiet_one_liner(client, db):
+    _add_backup(db)
+    html = client.get("/").text
+    line = _backup_line(html)
+    assert "最後備份：今天 03:00 ✓" in line
+    assert 'data-level="ok"' in line and "muted" in line and "notice" not in line
+    assert 'role="alert"' not in html
+
+
+def test_home_backup_failed_is_red_without_raw_error(client, db):
+    _add_backup(db, "FAILED", error="OSError: C:\\Users\\secret\\ledger denied")
+    html = client.get("/").text
+    line = _backup_line(html)
+    assert 'role="alert"' in line and 'data-level="alert"' in line
+    assert "最近一次備份失敗（今天 03:00），請檢查 log" in line
+    assert "secret" not in html and "OSError" not in html
+
+
+def test_home_backup_stale_over_36_hours_is_yellow(client, db):
+    _add_backup(db, finished="2026-10-13T20:00:00+08:00")  # 40 小時前
+    line = _backup_line(client.get("/").text)
+    assert 'data-level="warn"' in line and "已超過 36 小時未備份，最後成功：10-13 20:00" in line
+
+
+def test_home_backup_exactly_36_hours_is_still_ok(client, db):
+    _add_backup(db, finished="2026-10-14T00:00:00+08:00")  # 今天 12:00 的 36 小時前
+    assert 'data-level="ok"' in _backup_line(client.get("/").text)
+
+
+def test_home_backup_cleanup_warning_is_yellow_and_hides_error(client, db):
+    _add_backup(db, error="舊備份清理失敗（詳見 log）")
+    html = client.get("/").text
+    line = _backup_line(html)
+    assert 'data-level="warn"' in line and 'role="status"' in line
+    assert "最後備份成功，但舊備份清理失敗，請檢查 log" in line
+    assert "詳見 log" not in html  # 不顯示 backup_runs.error 原文
+
+
+def test_home_backup_cleanup_warning_recovers_after_next_clean_success(client, db):
+    _add_backup(db, finished="2026-10-14T03:00:00+08:00", error="舊備份清理失敗（詳見 log）")
+    assert 'data-level="warn"' in _backup_line(client.get("/").text)
+    _add_backup(db, finished="2026-10-15T03:00:00+08:00")
+    line = _backup_line(client.get("/").text)
+    assert 'data-level="ok"' in line and "最後備份：今天 03:00 ✓" in line
+
+
+def test_home_backup_failed_recovers_after_next_success(client, db):
+    _add_backup(db, "FAILED", finished="2026-10-15T03:00:00+08:00")
+    assert 'data-level="alert"' in _backup_line(client.get("/").text)
+    _add_backup(db, finished="2026-10-15T09:00:00+08:00")
+    assert 'data-level="ok"' in _backup_line(client.get("/").text)
+
+
+def test_home_backup_line_sits_in_the_system_status_section(client):
+    html = client.get("/").text
+    assert html.index("系統狀態") < html.index("home-backup") < html.index("已登入")

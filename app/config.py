@@ -32,6 +32,18 @@ class DatabaseSettings(BaseSettings):
     database_url: str = "sqlite:///./data/ledger.db"
 
 
+class BackupSettings(DatabaseSettings):
+    """備份程序用的設定（P3-5A）。只需要資料庫與備份設定，不需要 SECRET_KEY。
+
+    backup_age_recipient 是 age 的「公鑰」（age1…），不是私鑰；私鑰不放在伺服器上。
+    缺少 recipient 不在這裡擋下：由備份流程檢查並記錄一筆 FAILED，首頁才看得到。
+    """
+
+    backup_dir: Path = Path("./data/backups")  # data/ 已在 .gitignore
+    backup_age_recipient: str | None = None
+    backup_age_bin: str = "age"
+
+
 class Settings(DatabaseSettings):
     """完整的應用程式設定；啟動 Web 應用程式時使用，SECRET_KEY 必填。"""
 

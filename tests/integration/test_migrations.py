@@ -22,7 +22,7 @@ P1_TABLES = {
     "audit_logs",
 }
 P2_TABLES = {"tags", "transaction_tags"}  # 0003（P2 Step 8A）
-P3_TABLES = {"budgets"}  # 0004（P3-3A）
+P3_TABLES = {"budgets", "backup_runs"}  # 0004（P3-3A）、0005（P3-5A）
 ALL_TABLES = P0_TABLES | P1_TABLES | P2_TABLES | P3_TABLES
 
 
@@ -99,8 +99,8 @@ def test_revision_0003_has_no_budgets(alembic_cfg, db_url):
     assert table_names(db_url) == P0_TABLES | P1_TABLES | P2_TABLES | {"alembic_version"}
 
 
-def test_head_is_0004(alembic_cfg):
-    assert ScriptDirectory.from_config(alembic_cfg).get_heads() == ["0004"]
+def test_head_is_0005(alembic_cfg):
+    assert ScriptDirectory.from_config(alembic_cfg).get_heads() == ["0005"]
 
 
 def _insert_account_and_budget(conn):
@@ -141,7 +141,7 @@ def test_0004_downgrade_keeps_other_data_and_reupgrade(alembic_cfg, db_url):
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0003"
             assert conn.execute(text("SELECT count(*) FROM transactions")).scalar() == 1
             assert conn.execute(text("SELECT count(*) FROM accounts")).scalar() == 1
-        command.upgrade(alembic_cfg, "head")
+        command.upgrade(alembic_cfg, "0004")
         with engine.connect() as conn:
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0004"
             assert conn.execute(text("SELECT count(*) FROM budgets")).scalar() == 0
@@ -315,3 +315,46 @@ def test_budgets_requires_existing_account(migrated_engine):
 
     with pytest.raises(IntegrityError):
         _run(migrated_engine, INSERT_BUDGET, a=999, m=5000, e="2026-10")
+
+
+def test_revision_0004_has_no_backup_runs(alembic_cfg, db_url):
+    command.upgrade(alembic_cfg, "0004")
+    assert "backup_runs" not in table_names(db_url)
+    assert "budgets" in table_names(db_url)
+
+
+def test_0005_downgrade_keeps_other_data_and_reupgrade(alembic_cfg, db_url):
+    """0004 → 0005 → 0004 → 0005：downgrade 只丟 backup_runs，帳務資料仍在；再升級後紀錄為空。"""
+    command.upgrade(alembic_cfg, "0004")
+    engine = make_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO transactions (id, txn_date, txn_type, status, source,"
+                    " exclude_from_budget, created_at, updated_at)"
+                    " VALUES (1, '2026-10-15', 'MANUAL', 'POSTED', 'MANUAL', 0, 'x', 'x')"
+                )
+            )
+        command.upgrade(alembic_cfg, "0005")
+        assert "backup_runs" in table_names(db_url)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO backup_runs (started_at, finished_at, status, file_name,"
+                    " size_bytes, created_at, updated_at)"
+                    " VALUES ('x', 'x', 'SUCCESS', 'f.age', 1, 'x', 'x')"
+                )
+            )
+        command.downgrade(alembic_cfg, "0004")
+        assert "backup_runs" not in table_names(db_url)
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0004"
+            assert conn.execute(text("SELECT count(*) FROM transactions")).scalar() == 1
+        command.upgrade(alembic_cfg, "head")
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0005"
+            assert conn.execute(text("SELECT count(*) FROM backup_runs")).scalar() == 0
+            assert conn.execute(text("SELECT count(*) FROM transactions")).scalar() == 1
+    finally:
+        engine.dispose()

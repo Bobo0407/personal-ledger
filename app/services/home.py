@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.models.enums import AccountClass, AccountSubtype, TxnStatus
 from app.repositories import accounts as account_repo
-from app.services import budgets, credit_cards, integrity
+from app.services import backup, budgets, credit_cards, integrity
 from app.services.errors import InvalidSetting
 from app.services.ledger_queries import balance
 
@@ -94,6 +94,7 @@ class HomeSummary:
     cards: tuple[HomeCard, ...] = ()
     budget_cards: tuple[budgets.BudgetCard, ...] = ()
     budget_error: str | None = None  # budget_alert_pct 不合法：預算區塊顯示錯誤，其他區塊照常
+    backup_line: backup.BackupStatus | None = None  # 系統狀態區塊的備份一行（P3-5A）
 
 
 def home_balances(db: Session) -> tuple[HomeBalance, ...]:
@@ -159,4 +160,5 @@ def home_summary(db: Session) -> HomeSummary:
         cards=home_cards(db),
         budget_cards=budget_rows,
         budget_error=budget_error,
+        backup_line=backup.backup_status(db),
     )
