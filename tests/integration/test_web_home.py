@@ -45,7 +45,14 @@ def test_home_has_only_the_expected_entries(client):
     html = client.get("/").text
     hrefs = re.findall(r'<a [^>]*href="([^"]+)"', html)
     # 「/budgets」出現兩次：導覽的「預算」＋空狀態的「前往設定」
-    assert sorted(hrefs) == ["/budgets", "/budgets", "/settings", "/txn", "/txn/new"]
+    assert sorted(hrefs) == [
+        "/budgets",
+        "/budgets",
+        "/reports/monthly",
+        "/settings",
+        "/txn",
+        "/txn/new",
+    ]
     assert "/merchants" not in html
 
 

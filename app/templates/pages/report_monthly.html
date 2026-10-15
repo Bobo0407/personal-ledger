@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}月報｜記帳{% endblock %}
+{% block content %}
+{# 月報（P3-4，規格 8.2）。所有金額、結餘、儲蓄率、差額、前後月份都由 services/reports.py 算好，
+   這裡只印；不做任何運算、不判斷正負、不 abs。 #}
+<div class="page-head">
+  <h1>{% if report %}{{ report.month }} 月報{% else %}月報{% endif %}</h1>
+  <a href="/">返回首頁</a>
+</div>
+
+<form method="get" action="/reports/monthly" class="report-picker">
+  <label for="report-month">月份</label>
+  <input id="report-month" name="month" type="month" value="{{ report.month if report else '' }}"
+         {%- if error %} aria-invalid="true"{% endif %}>
+  <button type="submit">查看</button>
+</form>
+
+{% if error %}
+<p class="alert" role="alert" data-code="{{ error.code }}">{{ error.message }}。<a href="/reports/monthly">回到本月</a></p>
+{% else %}
+<p class="report-nav">
+  {% if report.prev_month %}<a href="/reports/monthly?month={{ report.prev_month }}">← 上個月</a>{% else %}<span></span>{% endif %}
+  <span class="muted">{{ report.first_day.isoformat() }} ～ {{ report.last_day.isoformat() }}</span>
+  {% if report.next_month %}<a href="/reports/monthly?month={{ report.next_month }}">下個月 →</a>{% else %}<span></span>{% endif %}
+</p>
+
+<section class="home-section" aria-labelledby="report-summary-title">
+  <h2 class="section-title" id="report-summary-title">收支總覽</h2>
+  <ul class="report-lines">
+    <li class="report-line" data-key="income"><span>本月收入</span><span class="num">{{ "{:,}".format(report.income) }}</span></li>
+    <li class="report-line" data-key="expense"><span>本月支出</span><span class="num">{{ "{:,}".format(report.expense) }}</span></li>
+    <li class="report-line report-total" data-key="balance"><span>本月結餘</span><span class="num">{{ "{:,}".format(report.balance) }}</span></li>
+    <li class="report-line" data-key="saving-rate"><span>儲蓄率</span>
+      {% if report.saving_rate is none %}<span class="muted">—（本月沒有收入）</span>
+      {% else %}<span class="num">{{ report.saving_rate }}%</span>{% endif %}</li>
+    <li class="report-line" data-key="adjustment"><span>帳務調整合計</span><span class="num">{{ "{:,}".format(report.adjustment_total) }}</span></li>
+  </ul>
+  <p class="muted report-note">支出包含勾選「不計入預算」的交易，退款會沖減支出。帳務調整合計：正數代表帳戶餘額被調高。</p>
+</section>
+
+<section class="home-section" aria-labelledby="report-expense-title">
+  <h2 class="section-title" id="report-expense-title">各科目支出與預算</h2>
+  {% if report.budget_error %}
+  <p class="alert" role="alert" data-code="BUDGET_SETTING">預算欄暫時無法顯示：{{ report.budget_error }}。支出金額不受影響。</p>
+  {% endif %}
+  {% if report.expense_rows %}
+  <ul class="report-expenses">
+    {% for row in report.expense_rows %}
+    <li class="report-expense" data-account-id="{{ row.account_id }}">
+      <div class="report-line report-expense-head"><span>{{ row.name }}{% if not row.is_active %} <span class="badge">已停用</span>{% endif %}</span><span class="num report-actual">{{ "{:,}".format(row.actual) }}</span></div>
+      {% if row.budget %}
+      {% set p = row.budget.progress %}
+      <p class="report-budget" data-state="{{ row.budget.state }}">預算 <span class="num">{{ "{:,}".format(p.budget) }}</span>　預算已用 <span class="num report-budget-used">{{ "{:,}".format(p.used) }}</span>　<span class="num">{{ p.usage_pct }}%</span>　
+        {%- if row.budget.state == "over" %}超支 <span class="num">{{ "{:,}".format(row.budget.over_amount) }}</span> 元
+        {%- elif row.budget.state == "used_up" %}剩 0 元
+        {%- elif row.budget.state == "warn" %}接近上限，剩 <span class="num">{{ "{:,}".format(p.remaining) }}</span> 元
+        {%- else %}剩餘 <span class="num">{{ "{:,}".format(p.remaining) }}</span>{% endif %}</p>
+      {% if row.excluded_amount != 0 %}
+      <p class="muted report-excluded" data-excluded="{{ row.excluded_amount }}">不計入預算淨額 <span class="num">{{ "{:+,}".format(row.excluded_amount) }}</span> 元（實際支出 − 預算已用）</p>
+      {% endif %}
+      {% elif not report.budget_error %}
+      <p class="muted report-budget">預算 —</p>
+      {% endif %}
+      {% if row.children or row.own_amount != 0 %}
+      <ul class="report-children">
+        {% for child in row.children %}
+        <li class="report-line" data-account-id="{{ child.account_id }}"><span>{{ child.name }}{% if not child.is_active %} <span class="badge">已停用</span>{% endif %}</span><span class="num">{{ "{:,}".format(child.amount) }}</span></li>
+        {% endfor %}
+        {% if row.own_amount != 0 %}
+        <li class="report-line report-own"><span>直接記在此科目</span><span class="num">{{ "{:,}".format(row.own_amount) }}</span></li>
+        {% endif %}
+      </ul>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">這個月沒有支出</p>
+  {% endif %}
+</section>
+
+<section class="home-section" aria-labelledby="report-accounts-title">
+  <h2 class="section-title" id="report-accounts-title">各帳戶月初與月底餘額</h2>
+  {% if report.accounts %}
+  <table class="report-table">
+    <thead><tr><th scope="col">帳戶</th><th scope="col" class="num">月初</th><th scope="col" class="num">月底</th></tr></thead>
+    <tbody>
+      {% for row in report.accounts %}
+      <tr data-account-id="{{ row.account_id }}">
+        <th scope="row">{{ row.name }}{% if not row.is_active %} <span class="badge">已停用</span>{% endif %} <span class="muted">{{ row.class_label }}</span></th>
+        <td class="num">{% if row.start_is_debt %}欠款 {% endif %}{{ "{:,}".format(row.start) }}</td>
+        <td class="num">{% if row.end_is_debt %}欠款 {% endif %}{{ "{:,}".format(row.end) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">沒有資產或負債帳戶</p>
+  {% endif %}
+  <ul class="report-lines">
+    <li class="report-line report-total" data-key="net-worth-start"><span>月初淨資產</span><span class="num">{{ "{:,}".format(report.net_worth_start) }}</span></li>
+    <li class="report-line report-total" data-key="net-worth-end"><span>月底淨資產</span><span class="num">{{ "{:,}".format(report.net_worth_end) }}</span></li>
+  </ul>
+  <p class="muted report-note">淨資產 = 資產合計 − 負債合計。月初 = 上個月底的餘額。{% if report.end_includes_future %}月底餘額包含本月稍後日期的交易。{% endif %}</p>
+</section>
+{% endif %}
+{% endblock %}

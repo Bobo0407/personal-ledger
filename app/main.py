@@ -21,6 +21,7 @@ from app.routers import auth as auth_router
 from app.routers import budgets as budgets_router
 from app.routers import home as home_router
 from app.routers import merchants as merchants_router
+from app.routers import reports as reports_router
 from app.routers import settings as settings_router
 from app.routers import txn as txn_router
 from app.templating import templates
@@ -74,6 +75,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(home_router.router)
     app.include_router(budgets_router.router)
     app.include_router(merchants_router.router)
+    app.include_router(reports_router.router)
     app.include_router(settings_router.router)
     app.include_router(txn_router.router)
     app.add_exception_handler(NotAuthenticated, _redirect_to_login)
