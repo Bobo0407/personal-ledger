@@ -1,15 +1,22 @@
-"""執行一次本機加密備份（規格 F29；P3-5A）。由 systemd timer 或手動呼叫（P3-6 再接排程）。
+"""執行一次加密備份：本機密文 ＋ 上傳雲端（規格 F29；P3-5A／5B）。
+
+由 systemd timer 或手動呼叫（P3-6 再接排程）。
 
 用法（在專案根目錄）：
-    python scripts/backup.py
+    python scripts/backup.py              # 正式用法：本機加密 + rclone 上傳 + 驗證
+    python scripts/backup.py --local-only # 明確只做本機（開發／CI）；SUCCESS + 黃色「僅本機」警告
 
-環境變數（或 .env）：DATABASE_URL、BACKUP_DIR、BACKUP_AGE_RECIPIENT（age 公鑰）、BACKUP_AGE_BIN。
-不需要 SECRET_KEY。log 寫到 stderr，不含 recipient 或任何金鑰。
+環境變數（或 .env）：DATABASE_URL、BACKUP_DIR、BACKUP_AGE_RECIPIENT（age 公鑰）、BACKUP_AGE_BIN、
+RCLONE_REMOTE、RCLONE_PATH、RCLONE_BIN、RCLONE_CONFIG。不需要 SECRET_KEY。
+log 寫到 stderr，不含 recipient、rclone 設定或任何 token。
+未設定 RCLONE_REMOTE 又沒有 --local-only → 視為設定錯誤（FAILED、exit 1），不會默默降級。
+P3-6 的正式排程不得使用 --local-only。
 
-結束碼：0 備份成功；1 備份失敗，已盡力寫入 FAILED 紀錄；
+結束碼：0 備份成功；1 備份失敗（含雲端上傳失敗、設定錯誤），已盡力寫入 FAILED 紀錄；
         2 無法保證有紀錄（來源資料庫不存在／無法寫入，或 backup_runs 寫入失敗）。
 """
 
+import argparse
 import logging
 import sys
 from pathlib import Path
@@ -24,12 +31,19 @@ from app.services import backup  # noqa: E402
 logger = logging.getLogger("app.backup")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="執行一次加密備份（本機 + 雲端）")
+    parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="明確只做本機備份（開發／CI）；正式排程不得使用",
+    )
+    args = parser.parse_args([] if argv is None else argv)
     logging.basicConfig(
         stream=sys.stderr, level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
     try:
-        config = backup.config_from_settings(BackupSettings())
+        config = backup.config_from_settings(BackupSettings(), local_only=args.local_only)
     except Exception:
         logger.exception("backup: invalid settings")
         return 2
@@ -56,4 +70,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

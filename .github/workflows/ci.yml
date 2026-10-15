@@ -26,13 +26,15 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      # 備份測試要用真的 age（P3-5A）。沒裝成功就讓這一步失敗；測試在 CI 缺 age 時也會失敗，不會 skip
-      - name: Install age
+      # 備份測試要用真的 age（P3-5A）與真的 rclone（P3-5B，用它的 local backend 當「雲端」，
+      # 不需要也不放任何 Google token）。沒裝成功就讓這一步失敗；測試在 CI 缺工具時也會失敗，不會 skip
+      - name: Install age and rclone
         run: |
           sudo apt-get update
-          sudo apt-get install -y age
+          sudo apt-get install -y age rclone
           age --version
           age-keygen --version
+          rclone version
 
       - name: Install dependencies
         run: |

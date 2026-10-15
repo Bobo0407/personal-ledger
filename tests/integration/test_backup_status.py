@@ -117,3 +117,86 @@ def test_default_now_uses_the_app_clock(ledger_db, monkeypatch):
     freeze_today(monkeypatch)  # 2026-10-15 12:00
     add_run(ledger_db, finished="2026-10-15T03:00:00+08:00")
     assert backup.backup_status(ledger_db).level == "ok"
+
+
+# --- P3-5B：雲端上傳 -------------------------------------------------------------------------
+
+UPLOAD_TEXT = "本機備份已完成，但雲端上傳失敗（今天 03:00），請檢查 log"
+LOCAL_ONLY_TEXT = "最後備份僅在本機，尚未上傳雲端"
+
+
+def test_upload_failure_is_red_and_says_the_local_backup_exists(ledger_db):
+    add_run(
+        ledger_db,
+        "FAILED",
+        file_name="ledger-20261015-030000.db.gz.age",
+        size_bytes=10,
+        error=backup.UPLOAD_FAILED,
+    )
+    result = status(ledger_db)
+    assert (result.level, result.message) == ("alert", UPLOAD_TEXT)
+
+
+def test_failed_run_without_a_file_keeps_the_original_wording(ledger_db):
+    add_run(ledger_db, "FAILED", error="未設定 RCLONE_REMOTE")
+    result = status(ledger_db)
+    assert (result.level, result.message) == ("alert", "最近一次備份失敗（今天 03:00），請檢查 log")
+
+
+def test_upload_failure_never_shows_the_raw_error(ledger_db):
+    add_run(
+        ledger_db,
+        "FAILED",
+        file_name="ledger-20261015-030000.db.gz.age",
+        size_bytes=10,
+        error="rclone failed: access_token=ya29.SECRET C:\\Users\\x\\rclone.conf",
+    )
+    message = status(ledger_db).message
+    assert "ya29" not in message and "rclone" not in message and "Users" not in message
+
+
+def test_local_only_success_is_a_yellow_warning(ledger_db):
+    add_run(ledger_db, error=backup.LOCAL_ONLY_WARNING)
+    result = status(ledger_db)
+    assert (result.level, result.message) == ("warn", LOCAL_ONLY_TEXT)
+
+
+def test_local_only_with_cleanup_failure_still_says_local_only(ledger_db):
+    add_run(
+        ledger_db,
+        error=backup.WARNING_SEPARATOR.join([backup.LOCAL_ONLY_WARNING, backup.CLEANUP_WARNING]),
+    )
+    assert status(ledger_db).message == LOCAL_ONLY_TEXT
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        backup.CLEANUP_WARNING,
+        backup.REMOTE_CLEANUP_WARNING,
+        backup.WARNING_SEPARATOR.join([backup.CLEANUP_WARNING, backup.REMOTE_CLEANUP_WARNING]),
+    ],
+)
+def test_local_or_remote_cleanup_failure_shows_the_same_yellow_line(ledger_db, error):
+    add_run(ledger_db, error=error)
+    result = status(ledger_db)
+    assert (result.level, result.message) == ("warn", CLEANUP_TEXT)
+
+
+def test_stale_takes_precedence_over_local_only(ledger_db):
+    add_run(ledger_db, finished=iso(NOW - timedelta(hours=40)), error=backup.LOCAL_ONLY_WARNING)
+    assert status(ledger_db).message.startswith("已超過 36 小時未備份")
+
+
+def test_a_full_success_after_an_upload_failure_returns_to_ok(ledger_db):
+    add_run(
+        ledger_db,
+        "FAILED",
+        finished="2026-10-14T03:00:00+08:00",
+        file_name="ledger-20261014-030000.db.gz.age",
+        size_bytes=10,
+        error=backup.UPLOAD_FAILED,
+    )
+    assert status(ledger_db).level == "alert"
+    add_run(ledger_db, finished="2026-10-15T03:00:00+08:00")
+    assert status(ledger_db).level == "ok"

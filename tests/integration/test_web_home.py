@@ -519,3 +519,62 @@ def test_home_backup_failed_recovers_after_next_success(client, db):
 def test_home_backup_line_sits_in_the_system_status_section(client):
     html = client.get("/").text
     assert html.index("系統狀態") < html.index("home-backup") < html.index("已登入")
+
+
+def test_home_backup_upload_failure_is_red_and_says_the_local_backup_is_done(client, db):
+    _add_backup(
+        db,
+        "FAILED",
+        file_name="ledger-20261015-030000.db.gz.age",
+        size_bytes=10,
+        error="雲端上傳失敗（詳見 log）",
+    )
+    html = client.get("/").text
+    line = _backup_line(html)
+    assert 'role="alert"' in html and 'data-level="alert"' in html
+    assert "本機備份已完成，但雲端上傳失敗" in line
+    assert "最近一次備份失敗" not in line
+
+
+def test_home_backup_upload_failure_hides_raw_rclone_error(client, db):
+    _add_backup(
+        db,
+        "FAILED",
+        file_name="ledger-20261015-030000.db.gz.age",
+        size_bytes=10,
+        error="rclone failed: access_token=ya29.SECRET C:\\\\Users\\\\x\\\\rclone.conf",
+    )
+    html = client.get("/").text
+    for leaked in ("ya29", "rclone", "SECRET", "Users", "詳見 log"):
+        assert leaked not in html
+
+
+def test_home_backup_local_only_is_yellow_with_its_own_wording(client, db):
+    _add_backup(db, error="僅本機備份（未上傳雲端）")
+    html = client.get("/").text
+    line = _backup_line(html)
+    assert 'data-level="warn"' in line and 'role="status"' in html
+    assert "最後備份僅在本機，尚未上傳雲端" in line
+    assert "僅本機備份（未上傳雲端）" not in html  # 不顯示 backup_runs.error 原文
+    assert 'role="alert"' not in html
+
+
+def test_home_backup_remote_cleanup_failure_is_yellow(client, db):
+    _add_backup(db, error="雲端舊備份清理失敗（詳見 log）")
+    line = _backup_line(client.get("/").text)
+    assert 'data-level="warn"' in line and "舊備份清理失敗" in line
+
+
+def test_home_backup_recovers_to_quiet_ok_after_a_full_success(client, db):
+    _add_backup(
+        db,
+        "FAILED",
+        finished="2026-10-14T03:00:00+08:00",
+        file_name="ledger-20261014-030000.db.gz.age",
+        size_bytes=10,
+        error="雲端上傳失敗（詳見 log）",
+    )
+    assert 'data-level="alert"' in _backup_line(client.get("/").text)
+    _add_backup(db, finished="2026-10-15T03:00:00+08:00")
+    html = client.get("/").text
+    assert 'data-level="ok"' in _backup_line(html) and 'role="alert"' not in html

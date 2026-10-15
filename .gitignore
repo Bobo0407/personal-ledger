@@ -13,6 +13,11 @@ attachments/
 logs/
 *.log
 *.age
+# rclone 設定檔含 OAuth token；age 私鑰檔不得進 Git
+rclone.conf
+*rclone*.conf
+age-key*.txt
+*-key.txt
 
 # --- Python ---
 __pycache__/

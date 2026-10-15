@@ -4,8 +4,10 @@
   「超過 36 小時沒備份」的首頁警示已經涵蓋這個情況）。
 - status 只有 SUCCESS／FAILED。SUCCESS 必須有 file_name、size_bytes；FAILED 必須有 error。
 - SUCCESS 的 error 通常是 NULL；備份檔成功、但清理舊備份失敗時，存一則簡短警告（首頁顯示黃色）。
-- file_name 只存檔名，不存目錄路徑。P3-5A 的 SUCCESS 代表「本機加密備份完成」；
-  P3-5B 加上傳後 SUCCESS 的語意要重新確認（docs/decisions/p3.md）。
+- file_name 只存檔名，不存目錄路徑。P3-5B 起 SUCCESS 代表「本機加密檔＋雲端上傳驗證都完成」；
+  雲端失敗是 FAILED，file_name／size_bytes 保留（表示本機檔已完成）。
+  P3-5B 之前的 SUCCESS 視為「僅本機」。
+  語意細節見 docs/decisions/p3.md 與 ADR-009；不需要新欄位。
 - 與帳務資料沒有任何關聯（沒有外鍵）。
 """
 

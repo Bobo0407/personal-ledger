@@ -1,4 +1,6 @@
-"""本機加密備份（規格 F29、7.2；P3-5A）。備份和網站分開執行，不經過 LedgerService。
+"""加密備份：本機（P3-5A）＋雲端上傳（P3-5B）（規格 F29、7.2）。
+
+備份和網站分開執行，不經過 LedgerService。
 
 流程：SQLite backup API → 記憶體快照（integrity_check）→ serialize → gzip → age 加密 → 檔案
 - 磁碟上不會出現未加密的 DB 或壓縮檔：快照與壓縮都在記憶體裡，只有 age 的輸出（密文）會落地。
@@ -11,11 +13,22 @@
 保留（規格 F29）：每日備份保留 30 天，加上每月第一份保留 12 個月（當月 + 前 11 個月）。
 只刪除檔名完全符合上述格式的檔案，永遠不刪剛產生的那份。
 
+雲端（P3-5B）：本機密文完成後，用 rclone 只上傳那一個 .age 檔，再列出遠端資料夾，確認該檔存在且
+大小等於本機檔，才算上傳成功（不依賴任何 backend 的 hash 行為）。遠端保留規則與本機相同，重用
+select_deletions，只刪檔名符合備份格式的單一檔案；遠端資料夾內其他檔案永遠不碰。
+
+SUCCESS 的語意（P3-5B 起）：本機加密檔 ＋ 已設定的雲端上傳與驗證都完成。
+- 未設定 RCLONE_REMOTE 且沒有 --local-only → 設定錯誤：寫 FAILED、不產生本機檔。
+- 明確指定 --local-only → SUCCESS，但 error 存固定的「僅本機」警告（首頁黃色）。
+- 本機檔完成、雲端上傳或驗證失敗 → FAILED，file_name／size_bytes 保留、本機檔保留、
+  不做任何清理（降級時不動舊備份）。
+- P3-5B 之前寫入的 SUCCESS 一律視為「僅本機」（正式環境的第一次排程備份在 P3-6，沒有這種歷史）。
+
 backup_runs（只在結束時寫一筆）
 - 流程失敗且來源 DB 仍可寫 → 嘗試寫一筆 FAILED，然後丟出 BackupFailed。
 - 來源 DB 不存在／嚴重損毀／無法寫入，或 backup_runs 的 INSERT 本身失敗 → 無法保證有 FAILED
   紀錄：丟出 BackupRecordError（腳本 exit 2），完整例外寫進 log。不會建立第二份 metadata。
-- 備份檔成功但清理舊檔失敗 → 仍是 SUCCESS，error 存簡短警告，首頁顯示黃色（backup_status）。
+- 備份成功但清理舊檔（本機或雲端）失敗 → 仍是 SUCCESS，error 存簡短警告，首頁顯示黃色。
 """
 
 import gzip
@@ -25,6 +38,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -36,11 +50,13 @@ from app import clock
 from app.config import BackupSettings
 from app.models import BackupRun
 from app.repositories import backup_runs as run_repo
+from app.services import backup_remote
+from app.services.backup_remote import RemoteConfig, RemoteError
 
 logger = logging.getLogger(__name__)
 
 FILE_NAME_FORMAT = "ledger-{stamp}.db.gz.age"
-_FILE_NAME = re.compile(r"ledger-(\d{8})-(\d{6})(?:-(\d+))?\.db\.gz\.age")
+_FILE_NAME = backup_remote.BACKUP_FILE_NAME
 _RECIPIENT = re.compile(r"age1[0-9a-z]{20,}")
 _SECRET = re.compile(r"AGE-SECRET-KEY-[0-9A-Z]+")
 
@@ -52,7 +68,11 @@ STEP_STDERR_MAX = 300
 AGE_TIMEOUT_SECONDS = 120
 SQLITE_TIMEOUT_SECONDS = 30
 
-CLEANUP_WARNING = "舊備份清理失敗（詳見 log）"
+CLEANUP_WARNING = "舊備份清理失敗（詳見 log）"  # 本機
+REMOTE_CLEANUP_WARNING = "雲端舊備份清理失敗（詳見 log）"
+LOCAL_ONLY_WARNING = "僅本機備份（未上傳雲端）"
+UPLOAD_FAILED = "雲端上傳失敗（詳見 log）"
+WARNING_SEPARATOR = "；"
 
 
 class BackupFailed(Exception):
@@ -73,17 +93,32 @@ class BackupConfig:
     backup_dir: Path
     age_bin: str
     recipient: str | None
+    remote: RemoteConfig | None = None
+    # 明確 opt-in 只做本機（開發／CI）。正式排程不得使用；忘了設定 remote 時要失敗，而不是降級。
+    local_only: bool = False
 
 
-def config_from_settings(settings: BackupSettings) -> BackupConfig:
+def config_from_settings(settings: BackupSettings, local_only: bool = False) -> BackupConfig:
     from sqlalchemy.engine import make_url
 
     database = make_url(settings.database_url).database or ""
+    remote_name = (settings.rclone_remote or "").strip()
+    remote = None
+    if remote_name:
+        config_file = (settings.rclone_config or "").strip()
+        remote = RemoteConfig(
+            remote=remote_name,
+            path=settings.rclone_path.strip(),
+            rclone_bin=settings.rclone_bin,
+            config_file=Path(config_file) if config_file else None,
+        )
     return BackupConfig(
         database_path=Path(database),
         backup_dir=settings.backup_dir,
         age_bin=settings.backup_age_bin,
         recipient=(settings.backup_age_recipient or "").strip() or None,
+        remote=remote,
+        local_only=local_only,
     )
 
 
@@ -253,10 +288,55 @@ def _commit_run(db: Session, run: BackupRun) -> None:
         raise BackupRecordError("無法寫入 backup_runs") from exc
 
 
+def _check_destination(config: BackupConfig) -> None:
+    """設定檢查（在產生任何檔案之前）。沒有 --local-only 卻沒設 remote → 設定錯誤，不降級。"""
+    if config.local_only:
+        return
+    if config.remote is None:
+        raise BackupStepError(
+            "未設定 RCLONE_REMOTE（雲端備份目的地）；只做本機備份請明確加上 --local-only"
+        )
+    try:
+        backup_remote.validate(config.remote)
+    except RemoteError as exc:
+        raise BackupStepError(str(exc)) from None
+
+
+def _upload_and_verify(remote: RemoteConfig, final: Path) -> list[backup_remote.RemoteFile]:
+    """上傳並驗證：rclone exit 0，且遠端 listing 找得到該檔、大小等於本機檔。回傳遠端 listing。"""
+    backup_remote.upload(remote, final.parent, final.name)
+    files = backup_remote.list_files(remote)
+    match = [f for f in files if f.name == final.name]
+    if not match:
+        raise RemoteError("上傳後遠端找不到該檔案")
+    if match[0].size != final.stat().st_size:
+        raise RemoteError("遠端檔案大小與本機不符")
+    return files
+
+
+def cleanup_remote(
+    remote: RemoteConfig, files: list[backup_remote.RemoteFile], now: datetime, protect: str
+) -> list[str]:
+    """依同一套保留規則刪除遠端過期備份（只動合法檔名的單檔）；有失敗最後丟 BackupStepError。"""
+    removed, failed = [], 0
+    for name in select_deletions([f.name for f in files], now):
+        if name == protect:
+            continue
+        try:
+            backup_remote.delete(remote, name)
+            removed.append(name)
+        except RemoteError:
+            failed += 1
+    if failed:
+        raise BackupStepError(f"{failed} 個遠端舊備份檔無法刪除")
+    return removed
+
+
 def run_backup(db: Session, config: BackupConfig) -> BackupRun:
     """執行一次備份並寫入 backup_runs。失敗丟 BackupFailed 或 BackupRecordError（見模組說明）。"""
     started = clock.now()
     try:
+        _check_destination(config)
         final = _create_backup(config, started)
     except Exception as exc:
         logger.exception("backup failed")
@@ -271,23 +351,55 @@ def run_backup(db: Session, config: BackupConfig) -> BackupRun:
         )
         raise BackupFailed("備份失敗") from exc
 
-    warning = None
+    size = final.stat().st_size
+    warnings: list[str] = []
+    remote_files: list[backup_remote.RemoteFile] = []
+    use_remote = not config.local_only and config.remote is not None
+    if use_remote:
+        try:
+            remote_files = _upload_and_verify(config.remote, final)
+        except Exception as exc:
+            # 本機密文已完成並保留；不做任何清理，直接記錄雲端失敗
+            logger.exception("backup upload failed")
+            _commit_run(
+                db,
+                BackupRun(
+                    started_at=clock.to_iso(started),
+                    finished_at=clock.now_iso(),
+                    status="FAILED",
+                    file_name=final.name,
+                    size_bytes=size,
+                    error=UPLOAD_FAILED,
+                ),
+            )
+            raise BackupFailed("雲端上傳失敗") from exc
+    else:
+        warnings.append(LOCAL_ONLY_WARNING)
+
     try:
         cleanup(config.backup_dir, started, protect=final.name)
     except Exception:
         logger.exception("backup cleanup failed")
-        warning = CLEANUP_WARNING
+        warnings.append(CLEANUP_WARNING)
+    if use_remote:
+        try:
+            cleanup_remote(config.remote, remote_files, started, protect=final.name)
+        except Exception:
+            logger.exception("backup remote cleanup failed")
+            warnings.append(REMOTE_CLEANUP_WARNING)
 
     run = BackupRun(
         started_at=clock.to_iso(started),
         finished_at=clock.now_iso(),
         status="SUCCESS",
         file_name=final.name,
-        size_bytes=final.stat().st_size,
-        error=warning,
+        size_bytes=size,
+        error=WARNING_SEPARATOR.join(warnings) or None,
     )
     _commit_run(db, run)
-    logger.info("backup ok: %s (%d bytes)", final.name, run.size_bytes)
+    logger.info(
+        "backup ok: %s (%d bytes)%s", final.name, size, " [local only]" if not use_remote else ""
+    )
     return run
 
 
@@ -336,6 +448,39 @@ def verify_backup(backup_file: Path, identity_file: Path, age_bin: str = "age") 
     return RestoreReport(integrity, version, counts)
 
 
+def latest_backup_name(names: Iterable[str]) -> str | None:
+    """合法備份檔名中時間最新的一個；不符合格式的檔名（例如遠端資料夾裡的其他檔案）一律忽略。"""
+    keyed = [(key, name) for name in names if (key := parse_file_name(name)) is not None]
+    return max(keyed)[1] if keyed else None
+
+
+def verify_remote_backup(
+    remote: RemoteConfig, which: str, identity_file: Path, age_bin: str = "age"
+) -> tuple[str, RestoreReport]:
+    """從遠端下載一份備份（which = 'latest' 或檔名）→ 解密 → gunzip → SQLite 驗證。
+
+    只下載密文到暫存目錄（finally 清掉）；明文只在記憶體。不碰任何正式資料庫。
+    """
+    try:
+        backup_remote.validate(remote)
+        names = [f.name for f in backup_remote.list_files(remote)]
+        if which == "latest":
+            name = latest_backup_name(names)
+            if name is None:
+                raise BackupStepError("遠端沒有任何合法的備份檔")
+        else:
+            if parse_file_name(which) is None:
+                raise BackupStepError("不是合法的備份檔名")
+            if which not in names:
+                raise BackupStepError("遠端找不到指定的備份檔")
+            name = which
+        with tempfile.TemporaryDirectory(prefix="ledger-restore-") as tmp:
+            downloaded = backup_remote.download(remote, name, Path(tmp))
+            return name, verify_backup(downloaded, identity_file, age_bin)
+    except RemoteError as exc:
+        raise BackupStepError(str(exc)) from None
+
+
 # --- 首頁備份狀態 --------------------------------------------------------------------------
 
 
@@ -359,8 +504,9 @@ def _when_label(moment: datetime, now: datetime) -> str:
 def backup_status(db: Session, now: datetime | None = None) -> BackupStatus:
     """首頁「最後備份」一行（規格 8.1）。只看最後一筆 backup_runs，不顯示原始 error。
 
-    FAILED → alert；SUCCESS 但超過 36 小時（嚴格大於）→ warn；SUCCESS 但清理舊檔失敗 → warn；
-    沒有任何紀錄 → warn；其餘 → ok。
+    FAILED → alert（有 file_name 表示本機密文已完成、只是雲端失敗，文字要講清楚）；
+    SUCCESS 但超過 36 小時（嚴格大於）→ warn；SUCCESS 但僅本機 → warn；SUCCESS 但清理舊檔
+    （本機或雲端）失敗 → warn；沒有任何紀錄 → warn；其餘 → ok。
     """
     now = now or clock.now()
     run = run_repo.latest(db)
@@ -369,9 +515,13 @@ def backup_status(db: Session, now: datetime | None = None) -> BackupStatus:
     finished = datetime.fromisoformat(run.finished_at)
     label = _when_label(finished, now)
     if run.status == "FAILED":
+        if run.file_name is not None:
+            return BackupStatus("alert", f"本機備份已完成，但雲端上傳失敗（{label}），請檢查 log")
         return BackupStatus("alert", f"最近一次備份失敗（{label}），請檢查 log")
     if now - finished > STALE_AFTER:
         return BackupStatus("warn", f"已超過 36 小時未備份，最後成功：{label}")
     if run.error is not None:
+        if LOCAL_ONLY_WARNING in run.error:
+            return BackupStatus("warn", "最後備份僅在本機，尚未上傳雲端")
         return BackupStatus("warn", "最後備份成功，但舊備份清理失敗，請檢查 log")
     return BackupStatus("ok", f"最後備份：{label} ✓")

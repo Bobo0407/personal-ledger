@@ -36,12 +36,17 @@ class BackupSettings(DatabaseSettings):
     """備份程序用的設定（P3-5A）。只需要資料庫與備份設定，不需要 SECRET_KEY。
 
     backup_age_recipient 是 age 的「公鑰」（age1…），不是私鑰；私鑰不放在伺服器上。
-    缺少 recipient 不在這裡擋下：由備份流程檢查並記錄一筆 FAILED，首頁才看得到。
+    缺少 recipient 或 rclone_remote 不在這裡擋下：由備份流程檢查並記錄一筆 FAILED，首頁才看得到。
     """
 
     backup_dir: Path = Path("./data/backups")  # data/ 已在 .gitignore
     backup_age_recipient: str | None = None
     backup_age_bin: str = "age"
+    # 雲端備份（P3-5B；rclone）。rclone.conf 含 OAuth token，視為 secret，不進 Git。
+    rclone_remote: str | None = None  # rclone config 裡的 remote 名稱；空 = 未設定
+    rclone_path: str = "ledger-backups"  # remote 內的資料夾
+    rclone_bin: str = "rclone"
+    rclone_config: str | None = None  # 選填：rclone.conf 路徑（以 --config 傳給 rclone）
 
 
 class Settings(DatabaseSettings):

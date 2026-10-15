@@ -57,7 +57,7 @@ def leftovers(directory: Path):
 
 def test_success_writes_file_and_success_row(seeded_db, keys, backup_dir):
     run = backup.run_backup(seeded_db, make_config(seeded_db, backup_dir, keys))
-    assert run.status == "SUCCESS" and run.error is None
+    assert run.status == "SUCCESS" and run.error == backup.LOCAL_ONLY_WARNING
     assert run.file_name == FIRST_NAME
     assert run.size_bytes == (backup_dir / FIRST_NAME).stat().st_size > 0
     assert run.started_at == "2026-10-15T12:00:00+08:00"
@@ -258,7 +258,7 @@ def test_success_cleans_expired_files_and_keeps_others(seeded_db, keys, backup_d
     for file in (keep_month_first, expired, recent, "notes.txt"):
         (backup_dir / file).write_bytes(b"x")
     run = backup.run_backup(seeded_db, make_config(seeded_db, backup_dir, keys))
-    assert run.error is None
+    assert run.error == backup.LOCAL_ONLY_WARNING
     assert leftovers(backup_dir) == sorted([keep_month_first, recent, "notes.txt", FIRST_NAME])
 
 
@@ -272,7 +272,10 @@ def test_cleanup_failure_keeps_success_with_short_warning(
     with caplog.at_level(logging.ERROR):
         run = backup.run_backup(seeded_db, make_config(seeded_db, backup_dir, keys))
     assert run.status == "SUCCESS"
-    assert run.error == backup.CLEANUP_WARNING  # 簡短警告，不含原始錯誤或路徑
+    # 簡短警告，不含原始錯誤或路徑（本機模式另有固定的「僅本機」警告）
+    assert run.error == backup.WARNING_SEPARATOR.join(
+        [backup.LOCAL_ONLY_WARNING, backup.CLEANUP_WARNING]
+    )
     assert "secret" not in run.error
     assert (backup_dir / FIRST_NAME).exists()
     assert "backup cleanup failed" in caplog.text
@@ -283,8 +286,11 @@ def test_next_clean_run_has_no_warning(seeded_db, keys, backup_dir, monkeypatch)
         patch.setattr(backup, "cleanup", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
         backup.run_backup(seeded_db, make_config(seeded_db, backup_dir, keys))
     second = backup.run_backup(seeded_db, make_config(seeded_db, backup_dir, keys))
-    assert [r.error for r in runs(seeded_db)] == [backup.CLEANUP_WARNING, None]
-    assert second.error is None
+    assert [r.error for r in runs(seeded_db)] == [
+        backup.WARNING_SEPARATOR.join([backup.LOCAL_ONLY_WARNING, backup.CLEANUP_WARNING]),
+        backup.LOCAL_ONLY_WARNING,
+    ]
+    assert second.error == backup.LOCAL_ONLY_WARNING
 
 
 # --- 不洩漏 ----------------------------------------------------------------------------------

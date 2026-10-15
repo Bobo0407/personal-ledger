@@ -46,7 +46,8 @@ models/        資料表定義；schema 變更一律透過 Alembic（migrations/
   [004 主資料](docs/adr/ADR-004-master-data.md)、
   [005 交易生命週期](docs/adr/ADR-005-transaction-lifecycle.md)、
   [006 退款模型](docs/adr/ADR-006-refund-model.md)、
-  [008 備份加密（age）](docs/adr/ADR-008-backup-encryption-age.md)
+  [008 備份加密（age）](docs/adr/ADR-008-backup-encryption-age.md)、
+  [009 雲端備份（rclone）](docs/adr/ADR-009-backup-remote-rclone.md)
 - [P1 決策紀錄](docs/decisions/p1.md)
 - [P1 規則與測試對照](docs/p1-rules.md)
 
@@ -124,10 +125,10 @@ uvicorn app.main:create_app --factory --reload
 
 開啟 http://127.0.0.1:8000/ 會被導向登入頁。應用程式日誌寫在 `LOG_DIR/app.log`（預設 `./logs`），每天輪替、保留 14 天。
 
-## 本機加密備份（P3-5A）
+## 加密備份：本機（P3-5A）＋雲端 rclone（P3-5B）
 
 備份和網站分開執行，網站沒開也能備份。流程：SQLite backup API → 記憶體快照 → gzip → [age](https://github.com/FiloSottile/age) 加密 → 檔案
-（磁碟上不會出現未加密的資料庫或壓縮檔）。排程（systemd timer）與上傳 Google Drive 分別在 P3-6、P3-5B。
+（磁碟上不會出現未加密的資料庫或壓縮檔）。接著用 [rclone](https://rclone.org/) 把那一個密文檔上傳到雲端並驗證。排程（systemd timer）在 P3-6。
 
 一次性準備：
 
@@ -143,15 +144,29 @@ BACKUP_DIR=./data/backups
 BACKUP_AGE_RECIPIENT=age1…
 ```
 
+雲端（rclone）：`rclone.conf` 含 OAuth token，**視為 secret，不進 Git**。先用 `rclone config` 建立一個 remote
+（Google Drive 建議用 `drive.file` scope，這點待真 Drive 驗收確認），再在 `.env` 設定：
+
+```
+RCLONE_REMOTE=<rclone config 裡的 remote 名稱>
+RCLONE_PATH=ledger-backups
+# RCLONE_CONFIG=<rclone.conf 路徑>   # 選填；正式排程的服務帳號建議明確指定
+```
+
 執行備份與還原驗證（不需要 `SECRET_KEY`）：
 
 ```bash
-python scripts/backup.py
+python scripts/backup.py              # 正式用法：本機加密 + 上傳 + 驗證
+python scripts/backup.py --local-only # 明確只做本機（開發／CI）；P3-6 的正式排程不得使用
 python scripts/restore_check.py --backup data/backups/ledger-YYYYMMDD-HHMMSS.db.gz.age --identity <私鑰檔>
+python scripts/restore_check.py --remote latest --identity <私鑰檔>   # 從雲端下載後驗證
 ```
 
-結束碼：`0` 成功；`1` 備份失敗，已盡力寫入 FAILED 紀錄；`2` 無法保證有紀錄（來源資料庫不存在、或 backup_runs 寫不進去）。
-保留規則：每日備份 30 天，加上每月第一份 12 個月。首頁「系統狀態」會顯示最後一次備份的狀態。
+沒設定 `RCLONE_REMOTE` 又沒加 `--local-only` 時，備份會失敗（FAILED、exit 1），不會默默只做本機。
+結束碼：`0` 成功；`1` 備份失敗（含雲端上傳失敗、設定錯誤），已盡力寫入 FAILED 紀錄；`2` 無法保證有紀錄
+（來源資料庫不存在、或 backup_runs 寫不進去）。
+保留規則（本機與雲端相同）：每日備份 30 天，加上每月第一份 12 個月；雲端只會刪檔名符合備份格式的檔案。
+首頁「系統狀態」會顯示最後一次備份的狀態；雲端上傳失敗會顯示紅色「本機備份已完成，但雲端上傳失敗」。
 
 ## 檢查
 
