@@ -1,0 +1,26 @@
+# Ledger 網站（Uvicorn）。安裝：sudo cp deploy/ledger.service /etc/systemd/system/
+# 說明與驗收順序見 docs/deploy.md。
+#
+# - 只 bind 127.0.0.1:8000，對外由 Caddy 反向代理（HTTPS）；單一 worker（SQLite、單人使用）。
+# - 以非 root 的 ledger 使用者執行；UMask=0077，新建的 DB、log 檔只有 ledger 能讀寫。
+# - migration 不在這裡跑（不放 ExecStartPre），由部署流程在 app 停止後手動執行。
+[Unit]
+Description=Ledger web app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ledger
+Group=ledger
+UMask=0077
+WorkingDirectory=/srv/ledger/app
+EnvironmentFile=/srv/ledger/config/ledger.env
+ExecStart=/srv/ledger/venv/bin/uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

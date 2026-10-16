@@ -1,0 +1,22 @@
+# Ledger 每日加密備份（本機密文 + rclone 上傳 + 驗證）。由 ledger-backup.timer 觸發，也可手動執行：
+#   sudo systemctl start ledger-backup.service
+#
+# - 呼叫既有的 scripts/backup.py，不重寫備份邏輯。正式排程「不得」加上本機專用旗標：
+#   忘了設定雲端時要得到 FAILED 與首頁紅色警示，而不是看起來正常的備份。
+# - exit 1（備份或雲端上傳失敗）、exit 2（無法保證有紀錄）都會讓這個 unit 進入 failed。
+# - rclone 會把更新後的 OAuth token 寫回 rclone.conf，所以它必須放在 ledger 可寫入的位置，
+#   這個 unit 也就不加唯讀沙箱。
+[Unit]
+Description=Ledger encrypted backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ledger
+Group=ledger
+UMask=0077
+WorkingDirectory=/srv/ledger/app
+EnvironmentFile=/srv/ledger/config/ledger.env
+ExecStart=/srv/ledger/venv/bin/python scripts/backup.py
+TimeoutStartSec=30min

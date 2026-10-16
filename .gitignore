@@ -18,6 +18,8 @@ rclone.conf
 *rclone*.conf
 age-key*.txt
 *-key.txt
+# production 的真設定檔（deploy/ledger.env.example 才是進 Git 的範本）
+deploy/*.env
 
 # --- Python ---
 __pycache__/

@@ -47,7 +47,9 @@ models/        資料表定義；schema 變更一律透過 Alembic（migrations/
   [005 交易生命週期](docs/adr/ADR-005-transaction-lifecycle.md)、
   [006 退款模型](docs/adr/ADR-006-refund-model.md)、
   [008 備份加密（age）](docs/adr/ADR-008-backup-encryption-age.md)、
-  [009 雲端備份（rclone）](docs/adr/ADR-009-backup-remote-rclone.md)
+  [009 雲端備份（rclone）](docs/adr/ADR-009-backup-remote-rclone.md)、
+  [010 部署架構](docs/adr/ADR-010-deployment.md)
+- [部署與維運手冊（Linux VM、systemd、Caddy、備份 timer）](docs/deploy.md)
 - [P1 決策紀錄](docs/decisions/p1.md)
 - [P1 規則與測試對照](docs/p1-rules.md)
 

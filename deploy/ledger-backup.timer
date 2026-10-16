@@ -1,0 +1,11 @@
+# 每天 03:00（台北時間）執行備份。時區寫在 OnCalendar 裡，不依賴 VM 的系統時區。
+# Persistent=true：VM 在 03:00 當下沒開機時，開機後補跑一次。
+[Unit]
+Description=Run Ledger encrypted backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Asia/Taipei
+Persistent=true
+
+[Install]
+WantedBy=timers.target

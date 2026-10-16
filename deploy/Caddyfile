@@ -1,0 +1,7 @@
+# 範本。複製到 VM 的 /etc/caddy/Caddyfile 後，把 YOUR_DOMAIN_HERE 換成你的網域。
+# 真正的網域不要 commit 進 Git。DNS 的 A record 必須先指向這台 VM，Caddy 才能申請憑證。
+# HTTP 會自動導向 HTTPS；uvicorn 只在 127.0.0.1:8000，不對外。
+YOUR_DOMAIN_HERE {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8000
+}
