@@ -168,7 +168,9 @@ def test_env_example_is_production_shaped():
     assert env["LOG_DIR"] == "/srv/ledger/logs"
     assert env["BACKUP_DIR"] == "/srv/ledger/data/backups"
     assert env["RCLONE_CONFIG"] == "/srv/ledger/config/rclone.conf"
-    assert env["BACKUP_AGE_BIN"].startswith("/") and env["RCLONE_BIN"].startswith("/")
+    assert env["BACKUP_AGE_BIN"].startswith("/")
+    # rclone 的安裝位置依安裝方式而異（/usr/bin 或 /usr/local/bin），不得寫死，交給 PATH
+    assert env["RCLONE_BIN"] == "rclone"
 
 
 @pytest.mark.parametrize("key", ["SECRET_KEY", "BACKUP_AGE_RECIPIENT", "RCLONE_REMOTE"])

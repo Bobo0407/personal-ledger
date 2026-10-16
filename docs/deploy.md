@@ -84,6 +84,10 @@ sudo apt install -y "./rclone-v1.75.1-linux-${ARCH}.deb"
 rclone version               # 預期 rclone v1.75.1；把實際輸出記到〈驗收紀錄〉
 ```
 
+`.deb` 會裝在 `/usr/bin/rclone`；若改用其他方式安裝（例如 `/usr/local/bin/rclone`）也可以。`ledger.env` 的
+`RCLONE_BIN=rclone` 是用名稱從 PATH 找，兩種位置都適用（systemd 預設 PATH 含 `/usr/local/bin`）。
+實際位置用 `command -v rclone` 確認並記到〈驗收紀錄〉。
+
 ### 3.3 Caddy（官方 apt repo）
 
 照 Caddy 官方文件的 Debian／Ubuntu 安裝步驟新增官方 repo 並安裝（指令以官方頁面當下內容為準，
