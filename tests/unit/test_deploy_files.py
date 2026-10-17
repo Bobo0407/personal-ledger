@@ -1,11 +1,12 @@
 """部署檔的靜態守門測試（P3-6）。只檢查 deploy/ 與 docs/deploy.md 的內容，不連線、不執行 systemd。
 
 守住的約束：uvicorn 只 bind localhost 且單 worker、兩個 service 都 UMask=0077 且不是 root、
-正式備份不含本機專用旗標、timer 時間、範本沒有真 secret、Caddyfile 只有 placeholder 網域、
-runbook 沒有未實測的 rclone authorize 指令。
+保留的備份 unit 不含本機專用旗標、timer 時間、範本沒有真 secret、Caddyfile 只有 placeholder 網域、
+production 不安裝／啟用備份（scope decision）、VM 驗收清單不含備份／Google／rclone 步驟。
 真正的 systemd／Caddy／權限行為要在 Linux VM 驗收（docs/deploy.md §10）。
 """
 
+import os
 import re
 from pathlib import Path
 
@@ -166,16 +167,30 @@ def test_env_example_is_production_shaped():
     assert env["APP_ENV"] == "prod" and env["SESSION_COOKIE_SECURE"] == "true"
     assert env["DATABASE_URL"] == "sqlite:////srv/ledger/data/ledger.db"
     assert env["LOG_DIR"] == "/srv/ledger/logs"
-    assert env["BACKUP_DIR"] == "/srv/ledger/data/backups"
-    assert env["RCLONE_CONFIG"] == "/srv/ledger/config/rclone.conf"
-    assert env["BACKUP_AGE_BIN"].startswith("/")
-    # rclone 的安裝位置依安裝方式而異（/usr/bin 或 /usr/local/bin），不得寫死，交給 PATH
-    assert env["RCLONE_BIN"] == "rclone"
 
 
-@pytest.mark.parametrize("key", ["SECRET_KEY", "BACKUP_AGE_RECIPIENT", "RCLONE_REMOTE"])
-def test_env_example_leaves_instance_specific_values_empty(key):
-    assert env_example()[key] == ""
+def test_env_example_leaves_the_secret_key_empty():
+    assert env_example()["SECRET_KEY"] == ""
+
+
+def test_env_example_has_no_active_backup_settings_in_production():
+    # scope decision：production 不啟用備份。備份設定只能以註解出現，ledger.env 不需要也不要填。
+    assert not [k for k in env_example() if k.startswith(("BACKUP_", "RCLONE_"))]
+
+
+def test_production_settings_start_without_any_backup_configuration(monkeypatch):
+    for key in list(os.environ):
+        if key.startswith(("BACKUP_", "RCLONE_")):
+            monkeypatch.delenv(key)
+    for key, value in env_example().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("SECRET_KEY", "x" * 48)
+    settings = Settings(_env_file=None)
+    assert settings.app_env == "prod" and settings.session_cookie_secure is True
+    # 就算設成空字串（例如有人照舊範本留空），backup 設定也不影響 app 設定載入
+    for key in ("BACKUP_AGE_RECIPIENT", "RCLONE_REMOTE", "RCLONE_CONFIG"):
+        monkeypatch.setenv(key, "")
+    assert Settings(_env_file=None).app_env == "prod"
 
 
 def test_env_example_has_only_known_settings_and_is_systemd_compatible():
@@ -224,19 +239,58 @@ def test_runbook_only_mentions_the_local_only_flag_as_a_prohibition():
         assert LOCAL_ONLY_FLAG not in line, line  # runbook 用文字描述，不貼出可複製的旗標
 
 
-def test_runbook_records_the_rclone_version_and_oauth_rules():
+def test_runbook_records_the_backup_scope_decision():
     text = read(RUNBOOK)
-    assert "v1.75.1" in text
-    assert "drive.file" in text and "共用" in text and "不得上 production" in text
-    assert "rclone config" in text
+    assert "Scope decision" in text and "production 備份不列入目前版本需求" in text
+    assert "資料遺失的風險由使用者接受" in text
+    assert "不要啟用 `ledger-backup.timer`" in text
+    assert "已取消" in text  # Google Drive／rclone／OAuth 是取消的需求，不是已完成
+
+
+def test_runbook_never_installs_or_enables_the_backup_units():
+    for line in read(RUNBOOK).splitlines():
+        if "ledger-backup" not in line:
+            continue
+        assert not re.search(r"systemctl\s+(enable|start|restart)|install\s+-m", line), line
+        assert "-t /etc/systemd/system" not in line, line
+
+
+def test_runbook_install_step_only_installs_the_web_service():
+    text = read(RUNBOOK)
+    assert "sudo install -m 0644 deploy/ledger.service -t /etc/systemd/system/" in text
+    assert "systemctl enable --now ledger.service" in text
+
+
+def _acceptance_section() -> str:
+    text = read(RUNBOOK)
+    start = text.index("## 9. VM 驗收順序")
+    return text[start : text.index("## 10.", start)]
+
+
+@pytest.mark.parametrize(
+    "word",
+    ["rclone", "Google", "OAuth", "client_id", "client_secret", "backup", "備份", ".age", "age1"],
+)
+def test_vm_acceptance_checklist_has_no_backup_google_or_rclone_steps(word):
+    # 唯一允許的是確認 timer「沒有」被啟用，用 ledger-backup.timer 這個名字（不含上面這些字）
+    assert word not in _acceptance_section().replace("ledger-backup.timer", "")
+
+
+def test_vm_acceptance_checks_that_the_backup_timer_is_not_enabled():
+    assert "systemctl is-enabled ledger-backup.timer" in _acceptance_section()
 
 
 def test_runbook_requires_umask_and_stat_permission_checks():
     text = read(RUNBOOK)
     assert "umask 077" in text and "UMask=0077" in text
     assert "stat -c" in text and "-perm /077" in text
-    for name in ("ledger.db", "ledger.env", "rclone.conf", ".age"):
-        assert name in text
+    assert "ledger.db" in text and "ledger.env" in text
+
+
+def test_runbook_needs_no_rclone_conf_or_backup_settings():
+    text = read(RUNBOOK)
+    assert "不需要 `rclone.conf`" in text
+    assert "0005 (head)" in text  # DB 初始化後的預期版本
 
 
 def test_runbook_migration_flow_snapshots_only_after_the_app_is_stopped():

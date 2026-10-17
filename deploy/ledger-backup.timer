@@ -1,3 +1,5 @@
+# 【目前 production 不安裝、不啟用】P3-6 scope decision：使用者決定 production 不做備份，資料遺失風險由使用者接受。
+# 這個檔案隨既有備份功能保留，未來若要啟用再依 ADR-008／ADR-009 與 docs/deploy.md 附錄 A 處理。
 # 每天 03:00（台北時間）執行備份。時區寫在 OnCalendar 裡，不依賴 VM 的系統時區。
 # Persistent=true：VM 在 03:00 當下沒開機時，開機後補跑一次。
 [Unit]

@@ -160,6 +160,7 @@ RCLONE_PATH=ledger-backups
 ```bash
 python scripts/backup.py              # 正式用法：本機加密 + 上傳 + 驗證
 python scripts/backup.py --local-only # 明確只做本機（開發／CI）；P3-6 的正式排程不得使用
+# 註：production 不啟用備份（P3-6 scope decision，見 docs/deploy.md §0）；此功能保留供未來使用
 python scripts/restore_check.py --backup data/backups/ledger-YYYYMMDD-HHMMSS.db.gz.age --identity <私鑰檔>
 python scripts/restore_check.py --remote latest --identity <私鑰檔>   # 從雲端下載後驗證
 ```
