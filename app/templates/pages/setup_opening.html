@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}期初餘額｜記帳{% endblock %}
+{% block content %}
+{# 期初餘額精靈（P3-7，F04）。普通 POST；驗證與寫入都在 P1（transactions.record_opening）。 #}
+<div class="page-head">
+  <h1>期初餘額</h1>
+  <a href="/">返回首頁</a>
+</div>
+<p class="muted">第一次上線時，輸入各帳戶的實際餘額，只需要做一次。資產填持有金額，信用卡等負債填欠款金額；暫時不輸入的帳戶留空。對方科目由系統自動記為「期初權益」。</p>
+
+{% if saved %}<p class="notice notice-ok" role="status">已儲存期初餘額。請對照下方「目前餘額」與銀行／App 是否一致。</p>{% endif %}
+
+{% for message in errors %}
+<p class="alert" role="alert">{{ message }}</p>
+{% endfor %}
+
+{% if pending %}
+<div class="notice notice-warn" role="status" data-confirm>
+  {% for message in pending %}<p>{{ message }}</p>{% endfor %}
+  <p>確認無誤請再按一次「仍要儲存」。</p>
+</div>
+{% endif %}
+
+{% set editable = rows | rejectattr("has_opening") | list %}
+{% set done = rows | selectattr("has_opening") | list %}
+
+{% if editable %}
+<form method="post" action="/setup/opening" class="stack">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="confirmed" value="{{ confirmed }}">
+  <label for="txn-date">期初日期（通常是上線當天）</label>
+  <input id="txn-date" name="txn_date" type="date" value="{{ txn_date }}" required>
+
+  {% for row in editable %}
+  <section class="settings-card" data-account-id="{{ row.account_id }}">
+    <h3 class="settings-card-name">{{ row.name }}{% if row.is_liability %} <span class="badge">負債</span>{% endif %}</h3>
+    <p class="muted">目前餘額：{{ "{:,}".format(row.balance) }}{% if row.has_activity %}（已有交易，期初會加到這個餘額上）{% endif %}</p>
+    <input type="hidden" name="account_id" value="{{ row.account_id }}">
+    <label for="bal-{{ row.account_id }}">{% if row.is_liability %}欠款金額{% else %}持有金額{% endif %}</label>
+    <input id="bal-{{ row.account_id }}" name="balance" type="text" inputmode="numeric" autocomplete="off"
+           value="{{ values.get(row.account_id | string, '') }}"
+           {%- if row_errors.get(row.account_id | string) %} aria-invalid="true"{% endif %}>
+    {% if row_errors.get(row.account_id | string) %}<p class="field-error" role="alert">{{ row_errors[row.account_id | string] }}</p>{% endif %}
+  </section>
+  {% endfor %}
+  <p class="muted">需要負數（透支、溢繳）時，請在金額前面加上減號。</p>
+  <button type="submit">{% if pending %}仍要儲存{% else %}儲存期初餘額{% endif %}</button>
+</form>
+{% else %}
+<p class="empty">所有帳戶都已經建立期初餘額。</p>
+{% endif %}
+
+{% if done %}
+<h2 class="section-title">已建立期初的帳戶</h2>
+<ul class="home-balances">
+  {% for row in done %}
+  <li class="home-balance"><span class="home-balance-name">{{ row.name }}</span><span class="home-balance-amount">{{ "{:,}".format(row.balance) }}</span></li>
+  {% endfor %}
+</ul>
+<p class="muted">已有期初的帳戶不能再輸入第二次；要更正請到「交易列表」找到該筆期初修改或刪除。</p>
+{% endif %}
+{% endblock %}

@@ -19,6 +19,9 @@
 
 <section class="home-section" aria-labelledby="home-balances-title">
   <h2 class="section-title" id="home-balances-title">帳戶餘額</h2>
+  {% if summary.opening_pending %}
+  <p class="notice notice-warn" role="status" data-opening-prompt>尚未輸入期初餘額 <a href="/setup/opening">前往輸入</a></p>
+  {% endif %}
   {% if summary.balances %}
   <ul class="home-balances">
     {% for row in summary.balances %}

@@ -44,12 +44,14 @@ def test_home_keeps_login_info_and_logout(client):
 def test_home_has_only_the_expected_entries(client):
     html = client.get("/").text
     hrefs = re.findall(r'<a [^>]*href="([^"]+)"', html)
-    # 「/budgets」出現兩次：導覽的「預算」＋空狀態的「前往設定」
+    # 「/budgets」出現兩次：導覽的「預算」＋空狀態的「前往設定」；
+    # 「/setup/opening」是還沒有任何期初餘額時的提示（P3-7），輸入期初後就不再出現
     assert sorted(hrefs) == [
         "/budgets",
         "/budgets",
         "/reports/monthly",
         "/settings",
+        "/setup/opening",
         "/txn",
         "/txn/new",
     ]
