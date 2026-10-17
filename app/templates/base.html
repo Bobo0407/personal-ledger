@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <title>{% block title %}記帳{% endblock %}</title>
+  {#- 最小 PWA：只有 manifest 與圖示（可加到主畫面、standalone 開啟）；不做 service worker／離線。
+      用固定相對路徑（不用 url_for 的絕對網址），經反向代理也一定是 https。 #}
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <meta name="theme-color" content="#0b6bcb">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
   {#- HTMX 回應處理（htmx 2 預設不 swap 4xx／5xx）：
       422 表單錯誤、409 確認畫面照常換進目標；5xx 錯誤片段換進 #txn-status，不清掉表單（規格 9.3）。
