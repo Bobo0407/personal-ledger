@@ -54,8 +54,19 @@ def test_home_has_only_the_expected_entries(client):
         "/setup/opening",
         "/txn",
         "/txn/new",
+        "/txn/new?type=transfer&amp;preset=withdraw",
     ]
     assert "/merchants" not in html
+
+
+def test_home_has_withdraw_entry(client):
+    """V1.1 提款入口：連到轉帳表單的 withdraw preset（帳務上仍是 TRANSFER）。"""
+    html = client.get("/").text
+    assert re.search(
+        r'<a class="button-link" href="/txn/new\?type=transfer&amp;preset=withdraw"'
+        r" data-withdraw-link>提款</a>",
+        html,
+    )
 
 
 def test_home_settings_entry(client):

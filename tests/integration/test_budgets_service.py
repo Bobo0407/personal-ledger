@@ -14,7 +14,7 @@ from app.models import Account, Budget, PaymentMethod, Setting
 from app.services import accounts as account_service
 from app.services import budgets, transactions
 from app.services.budgets import BudgetStatus
-from app.services.entries import ExpenseForm, RefundForm
+from app.services.entries import ExpenseForm, RefundForm, TransferForm
 from app.services.errors import InvalidSetting, NotFound, RuleViolation
 from app.services.ledger_queries import class_total, period_total
 from tests.ledger_helpers import (
@@ -219,6 +219,18 @@ def test_fee_and_interest_lines_count_toward_their_own_first_level_budget(seeded
     set_budget(seeded_db, "5500", 1000)
     spend(seeded_db, TODAY, 2000, "5101", fee_amount=30, fee_account_id=acc(seeded_db, "5502"))
     assert used(seeded_db, "5500") == 30
+
+
+def test_atm_withdrawal_only_fee_counts_toward_budget(seeded_db):
+    """V1.1 回歸：提款本金（郵局 → 現金）不進任何預算，只有手續費計入它所屬的第一層預算。"""
+    set_budget(seeded_db, "5100", 5000)
+    set_budget(seeded_db, "5500", 1000)
+    form = TransferForm(
+        TODAY, 3000, acc(seeded_db, "1102"), acc(seeded_db, "1101"), 5, acc(seeded_db, "5502")
+    )
+    transactions.record_transfer(seeded_db, form, confirmed={"V10", "V11", "V13"})
+    assert used(seeded_db, "5500") == 5
+    assert used(seeded_db, "5100") == 0
 
 
 def test_exclude_flag_excludes_fee_lines_of_that_transaction_too(seeded_db):

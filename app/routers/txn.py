@@ -176,6 +176,9 @@ FORM_TEMPLATES = {
     TYPE_TRANSFER: "partials/txn_form_transfer.html",
 }
 HEADINGS = {TYPE_EXPENSE: "記一筆支出", TYPE_INCOME: "記一筆收入", TYPE_TRANSFER: "記一筆轉帳"}
+# 提款（V1.1）：/txn/new?type=transfer&preset=withdraw，帳務上就是「銀行 → 現金」的轉帳
+PRESET_WITHDRAW = "withdraw"
+WITHDRAW_HEADING = "記一筆提款"
 
 # --- /txn/{id}/edit 的表單（P2 Step 5B）：依「原交易」類型決定，不信任送來的欄位 ---
 EDIT_FORM_TYPE = {
@@ -397,12 +400,22 @@ def new_txn(
             values["txn_date"] = date.fromisoformat(params["txn_date"]).isoformat()
         except ValueError:
             pass
+    # 提款入口（V1.1）：仍是一般轉帳，只換標題、預選現金、展開手續費；未知的 preset 一律忽略
+    heading = HEADINGS[txn_type]
+    fee_open = False
+    if txn_type == TYPE_TRANSFER and params.get("preset") == PRESET_WITHDRAW:
+        heading = WITHDRAW_HEADING
+        fee_open = True
+        cash_id = entry_options.default_cash_account_id(db)
+        if cash_id is not None:
+            values["to_account_id"] = str(cash_id)
     template = "partials/txn_new_body.html" if _is_htmx(request) else "pages/txn_new.html"
     return render(
         request,
         template,
         {
             **options,
+            "fee_open": fee_open,
             "values": values,
             "field_errors": {},
             "form_errors": [],
@@ -411,7 +424,7 @@ def new_txn(
             "form_url": "/txn/new",
             "txn_type": txn_type,
             "txn_type_choices": TXN_TYPE_CHOICES,
-            "heading": HEADINGS[txn_type],
+            "heading": heading,
             "form_template": FORM_TEMPLATES[txn_type],
             **_run_context(request, db),
         },

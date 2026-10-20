@@ -172,6 +172,77 @@ def test_transfer_options(client, db, session_factory):
     assert "5501" in fee and "5500" not in fee and all(c.startswith("5") for c in fee)
 
 
+# --- V1.1 提款入口（transfer + preset=withdraw） --------------------------------------------
+
+FEE_DETAILS = re.compile(r'<details class="voucher fee"([^>]*)>')
+
+
+def test_withdraw_preset_preselects_single_cash_and_opens_fee(client, db):
+    html = page(client, "transfer", preset="withdraw")
+    assert "<h1>記一筆提款</h1>" in html
+    assert hidden(html, "txn_type") == "transfer"  # 送出仍是一般轉帳
+    assert selected_value(html, "to_account_id") == str(acc(db, "1101"))
+    assert selected_value(html, "from_account_id") is None
+    assert selected_value(html, "fee_account_id") is None  # 手續費科目不預選
+    assert FEE_DETAILS.search(html).group(1) == " open"
+
+
+def test_plain_transfer_keeps_fee_closed_and_nothing_preselected(client, db):
+    html = page(client, "transfer")
+    assert "<h1>記一筆轉帳</h1>" in html
+    assert selected_value(html, "to_account_id") is None
+    assert FEE_DETAILS.search(html).group(1) == ""
+
+
+@pytest.mark.parametrize("preset", ["bogus", "WITHDRAW", ""])
+def test_unknown_preset_is_ignored(client, preset):
+    html = page(client, "transfer", preset=preset)
+    assert "<h1>記一筆轉帳</h1>" in html
+    assert selected_value(html, "to_account_id") is None
+    assert FEE_DETAILS.search(html).group(1) == ""
+
+
+def test_withdraw_preset_only_applies_to_transfer(client):
+    html = page(client, "expense", preset="withdraw")
+    assert "<h1>記一筆支出</h1>" in html
+
+
+def test_withdraw_preset_no_cash_account_selects_nothing(client, db, session_factory):
+    with session_factory() as s:
+        s.get(Account, acc(s, "1101")).is_active = False
+        s.commit()
+    html = page(client, "transfer", preset="withdraw")
+    assert "<h1>記一筆提款</h1>" in html
+    assert selected_value(html, "to_account_id") is None
+
+
+def test_withdraw_preset_multiple_cash_accounts_selects_nothing(client, db, session_factory):
+    with session_factory() as s:
+        s.get(Account, acc(s, "1103")).subtype = "CASH"
+        s.commit()
+    html = page(client, "transfer", preset="withdraw")
+    assert selected_value(html, "to_account_id") is None
+
+
+def test_withdraw_saves_as_transfer_and_only_fee_is_expense(client, db, session_factory):
+    resp = post(
+        client,
+        db,
+        "transfer",
+        amount="3000",
+        from_account_id=acc(db, "1102"),
+        to_account_id=acc(db, "1101"),
+        fee_amount="5",
+        fee_account_id=acc(db, "5501"),
+    )
+    assert saved_message(resp.text) == "已儲存：轉帳 3,005 元"
+    [txn] = txns(session_factory)
+    assert txn.txn_type == "TRANSFER"
+    by_account = {p.account_id: p.amount for p in txn.postings}
+    assert by_account == {acc(db, "1101"): 3000, acc(db, "5501"): 5, acc(db, "1102"): -3005}
+    assert 'data-expense-net="5" data-income-total="0"' in client.get("/txn").text
+
+
 # --- 類型切換（HTMX） ------------------------------------------------------------------
 
 

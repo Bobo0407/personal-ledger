@@ -11,9 +11,9 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from app.models import PaymentMethod, Setting
+from app.models import PaymentMethod, Setting, Transaction
 from app.services import accounts as account_service
-from app.services import budgets, reports, transactions
+from app.services import budgets, ledger_queries, reports, transactions
 from app.services.entries import (
     AdjustmentForm,
     CardPaymentForm,
@@ -129,6 +129,36 @@ def test_transfer_fee_counts_as_expense(seeded_db):
     )
     transactions.record_transfer(seeded_db, form, confirmed=ALL)
     assert report(seeded_db).expense == 15
+
+
+def test_atm_withdrawal_only_fee_is_expense(seeded_db):
+    """V1.1 回歸：ATM 提款 3,000、手續費 5（郵局 → 現金）。
+
+    曾被錯記成支出 3,005，月支出虛增 3,000；正確是資產轉移，只有手續費是支出。"""
+    earn(seeded_db, TODAY, 10000)
+    cash, post_office, fee = acc(seeded_db, "1101"), acc(seeded_db, "1102"), acc(seeded_db, "5501")
+    before = {a: ledger_queries.balance(seeded_db, a) for a in (cash, post_office)}
+    form = TransferForm(TODAY, 3000, post_office, cash, 5, fee)
+    result = transactions.record_transfer(seeded_db, form, confirmed=ALL)
+    txn = seeded_db.get(Transaction, result.transaction_id)
+    by_account = {p.account_id: p.amount for p in txn.postings}
+    assert txn.txn_type == "TRANSFER"
+    assert by_account == {cash: 3000, fee: 5, post_office: -3005}
+    assert sum(by_account.values()) == 0
+    assert ledger_queries.balance(seeded_db, cash) - before[cash] == 3000
+    assert ledger_queries.balance(seeded_db, post_office) - before[post_office] == -3005
+    rep = report(seeded_db)
+    assert (rep.income, rep.expense) == (10000, 5)
+
+
+def test_atm_withdrawal_without_fee_is_pure_asset_transfer(seeded_db):
+    cash, post_office = acc(seeded_db, "1101"), acc(seeded_db, "1102")
+    form = TransferForm(TODAY, 3000, post_office, cash)
+    result = transactions.record_transfer(seeded_db, form, confirmed=ALL)
+    txn = seeded_db.get(Transaction, result.transaction_id)
+    assert {p.account_id: p.amount for p in txn.postings} == {cash: 3000, post_office: -3000}
+    rep = report(seeded_db)
+    assert (rep.income, rep.expense) == (0, 0)
 
 
 def test_card_payment_does_not_double_count_expense(seeded_db):

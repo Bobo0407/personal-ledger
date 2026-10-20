@@ -109,6 +109,21 @@ def balance_sheet_groups(
     return [(labels[cls], items) for cls, items in groups.items() if items]
 
 
+def default_cash_account_id(db: Session) -> int | None:
+    """提款入口（V1.1）預選的轉入帳戶：啟用中、ASSET、subtype=CASH 的末層科目剛好一個時才回傳。
+
+    零個或多個都回 None（不猜），由使用者自己選；只是預設值，規則仍由 P1 檢查。
+    """
+    candidates = [
+        a.id
+        for a in accounts.leaf_accounts(db, active_only=True)
+        if a.is_active
+        and a.account_class == AccountClass.ASSET
+        and a.subtype == AccountSubtype.CASH
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def credit_card_groups(db: Session, keep_id: int | None = None) -> AccountGroups:
     """修改繳卡費（P2 Step 5B）的信用卡選單：只列信用卡。只是選項過濾，規則仍由 P1 檢查。"""
     cards = [a for a in _leaves(db, keep_id) if a.subtype == AccountSubtype.CREDIT_CARD]
